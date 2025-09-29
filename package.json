@@ -1,0 +1,37 @@
+{
+  "name": "mergemasterxxl",
+  "version": "1.0.0",
+  "description": "Merges open PRs for GT: New Horizons experimental builds",
+  "type": "module",
+  "main": "src/entry_point.ts",
+  "scripts": {
+    "run": "tsx src/entry_point.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GTNewHorizons/MergeMasterXXL.git"
+  },
+  "author": "Recursive Pineapple",
+  "license": "LGPL-3.0-or-later",
+  "bugs": {
+    "url": "https://github.com/GTNewHorizons/MergeMasterXXL/issues"
+  },
+  "homepage": "https://github.com/GTNewHorizons/MergeMasterXXL#readme",
+  "dependencies": {
+    "@octokit/core": "^7.0.4",
+    "@types/lodash": "^4.17.20",
+    "@types/yaml": "^1.9.7",
+    "axios": "^1.12.2",
+    "dotenv": "^17.2.2",
+    "lodash": "^4.17.21",
+    "pino": "^9.11.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "pino-pretty": "^13.1.1"
+  }
+}
