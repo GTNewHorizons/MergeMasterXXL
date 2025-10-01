@@ -7,7 +7,7 @@ import { get_pr, get_prs, NOT_REVERTABLE, parse_pr, PRId, stringify_pr } from ".
 import yaml from "yaml";
 import { prod } from "./env";
 import { DepGraph } from "dependency-graph";
-import { ActionId, create_tag, get_latest_tag, increment_tag, wait_for_action } from "./requests/tags";
+import { create_tag, get_latest_tag, get_latest_tags, get_tag_for_ref, increment_tag, ParsedTag, stringify_tag, wait_for_action } from "./requests/tags";
 
 export const logger: Logger = prod ? pino({ level: "warn" }) : pino({ transport: { target: "pino-pretty", options: { colorize: true, }, }, level: "debug", });
 
@@ -15,13 +15,7 @@ export const dryrun: boolean = true;
 
 // const members = await get_members();
 
-const repos = ["MergeMasterXXL-TestRepo"]; // await get_repos();
-
-const graph = new DepGraph();
-
-for (const repo of repos) {
-    graph.addNode(repo);
-}
+const repos = ["MergeMasterXXL-TestRepo", "MergeMasterXXL-TestRepo-2"]; // await get_repos();
 
 const includedPRs: {[repo:string]: PRId[]} = {};
 const dependencies: {[repo:string]: PRId[]} = {};
@@ -68,10 +62,13 @@ for (const repo of repos) {
         if (!needs_update) {
             logger.info("No PRs have been updated: dev will not be updated");
 
-            const status = get_dev_branch_status(await get_branch_commits(repo, "dev"));
+            const commits = await get_branch_commits(repo, "dev");
+
+            const status = get_dev_branch_status(commits);
 
             if (status) {
                 includedPRs[repo] = _.map(status["Included PRs"], pr => parse_pr(pr) as PRId);
+                dependencies[repo] = _(status["Dependencies"]).map(parse_pr).filter(Boolean).value() as PRId[];
             }
             
             continue;
@@ -114,9 +111,9 @@ for (const repo of repos) {
     
                 if (_.find(pr.labels.nodes, { name: NOT_REVERTABLE })) {
                     if (_.includes(previously_included_prs, pr.permalink)) {
-                        logger.error(`Experimental tagging will be cancelled since ${pr.permalink} could not be merged into dev: the dev branch prior to this merge will be pushed to dev-error`);
+                        logger.error(`Experimental tagging will be cancelled since non-revertable PR ${pr.permalink} could not be merged into dev: the dev branch prior to this merge will be pushed to dev-error`);
                         await force_push(repo, "dev-error");
-                        break;
+                        throw new Error("Could not merge non-revertable PR into dev");
                     }
                 }
             }
@@ -136,7 +133,7 @@ for (const repo of repos) {
 
                 logger.error(`Experimental tagging will be cancelled since dev-custom could not be merged into dev: the dev branch prior to this merge will be pushed to dev-error`);
                 await force_push(repo, "dev-error");
-                break;
+                throw new Error("Could not merge dev-custom into dev");
             }
         } else {
             logger.info(`dev-custom does not exist: it will not be merged into dev`);
@@ -156,14 +153,6 @@ for (const repo of repos) {
 
         includedPRs[repo] = _.map(prs.prs, pr => parse_pr(pr.permalink) as PRId);
         dependencies[repo] = prs.dependencies;
-
-        for (const dep of prs.dependencies) {
-            if (graph.hasNode(dep.repo)) {
-                graph.addDependency(repo, dep.repo);
-            } else {
-                logger.warn(`Ignoring invalid repo depencency for ${repo}: ${dep.repo}`);
-            }
-        }
     } finally {
         // delete cloned repo
     }
@@ -171,10 +160,22 @@ for (const repo of repos) {
 
 const allIncludedPRs = new Set(_(includedPRs).values().flatten().map(stringify_pr).value());
 
+const graph = new DepGraph();
+
+for (const repo of repos) {
+    graph.addNode(repo);
+}
+
 var success = true;
 
 for (const [repo, deps] of _.entries(dependencies)) {
     for (const dep of deps) {
+        if (graph.hasNode(dep.repo)) {
+            graph.addDependency(repo, dep.repo);
+        } else {
+            logger.warn(`Ignoring invalid repo depencency for ${repo}: ${dep.repo}`);
+        }
+
         if (!allIncludedPRs.has(stringify_pr(dep))) {
             const pr = await get_pr(dep);
 
@@ -189,7 +190,7 @@ for (const [repo, deps] of _.entries(dependencies)) {
                 continue;
             }
 
-            logger.error(`Repo ${repo} requires PR ${dep}, which was not included in the build: this experimental will be cancelled, this cannot be automatically recovered from`);
+            logger.error(`Repo ${repo} requires PR ${stringify_pr(dep)}, which was not included in the build: this experimental will be cancelled, this cannot be automatically recovered from`);
             success = false;
         }
     }
@@ -199,61 +200,80 @@ if (!success) {
     throw new Error("PR dependency check failed");
 }
 
-const taggedRepos = new Set();
-
-const workflows: {[repo: string]: ActionId} = {};
+const workflows: {[repo: string]: string} = {};
+const master_tags: {[repo: string]: string} = {};
+const pre_tags: {[repo: string]: string} = {};
 
 for (const repo of graph.overallOrder()) {
     try {
+        logger.info(`Creating releases for ${repo}`);
+
         await clone_repo(repo);
 
+        const latestTag = _.maxBy(await get_latest_tags(repo), "values") as ParsedTag;
+
         const latestMaster = await get_latest_tag(repo, "master");
-
-        var tag = latestMaster;
-
-        const commitsToMaster = await get_commits(repo, `${latestMaster}..master`);
+        const commitsToMaster = await get_commits(repo, `${stringify_tag(latestMaster)}..master`);
 
         if (commitsToMaster.length > 0) {
-            tag = increment_tag(tag, false);
+            const tag_name = increment_tag(latestTag, false);
+            master_tags[repo] = tag_name;
+            pre_tags[repo] = tag_name;
 
-            logger.info(`Creating tag ${tag} for master (repo: ${repo})`);
+            logger.info(`Creating tag ${tag_name} off of master branch (repo: ${repo})`);
 
-            await update_repo(repo);
+            await update_repo(repo, master_tags);
             await push(repo, "master");
 
-            const workflow_id = await create_tag("GTNewHorizons", repo, tag, "master");
+            const workflow_sha = await create_tag("GTNewHorizons", repo, tag_name, "master");
             
-            logger.info(`Created and pushed ${tag} for master (repo: ${repo}, workflow: ${workflow_id})`);
+            logger.info(`Created and pushed ${tag_name} (base branch: master,repo: ${repo}, workflow commit: ${workflow_sha})`);
 
-            if (workflow_id) workflows[repo] = workflow_id;
+            if (workflow_sha) {
+                workflows[repo] = workflow_sha;
+            }
         } else {
-            logger.info(`No commits have been made to master since ${tag}: another tag will not be created`);
+            logger.info(`No commits have been made to master since ${stringify_tag(latestMaster)}: another tag will not be created`);
         }
 
         if (await checkout_branch(repo, "dev")) {
-            tag = increment_tag(tag, true);
-
-            logger.info(`Creating tag ${tag} for dev (repo: ${repo})`);
-
-            for (const dep of graph.dependenciesOf(repo)) {
-                const workflow = workflows[dep];
-
-                if (workflow) {
-                    await wait_for_action("GTNewHorizons", dep, workflow);
+            if (await get_tag_for_ref(repo, "dev")) {
+                logger.info(`dev branch for ${repo} already has a tag: it will not be tagged again because it has not been updated`)
+            } else {
+                const tag_name = increment_tag(latestTag, true);
+                pre_tags[repo] = tag_name;
+    
+                logger.info(`Creating tag ${tag_name} off of dev branch (repo: ${repo})`);
+    
+                for (const dep of graph.dependenciesOf(repo)) {
+                    logger.info(`Checking dependency ${dep} (repo: ${repo})`);
+    
+                    const workflow = workflows[dep];
+    
+                    if (workflow) {
+                        if (!await wait_for_action("GTNewHorizons", dep, workflow)) {
+                            logger.info(`Actions for repo ${dep} failed: cannot build ${repo}, this experimental will be cancelled`);
+                            throw new Error("Could not build dependency");
+                        }
+                    } else {
+                        logger.info(`Dependency ${dep} did not have a corresponding workflow`);
+                    }
+                }
+    
+                logger.info(`Actions for all dependencies have finished: tagging dev branch (repo: ${repo})`);
+    
+                await update_repo(repo, pre_tags);
+                await force_push(repo, "dev");
+    
+                const workflow_sha = await create_tag("GTNewHorizons", repo, tag_name, "dev");
+    
+                logger.info(`Created and pushed ${tag_name} (base branch: dev, repo: ${repo}, workflow commit: ${workflow_sha})`);
+    
+                // Overwrite the master workflow if one exists
+                if (workflow_sha) {
+                    workflows[repo] = workflow_sha;
                 }
             }
-
-            logger.info(`Actions for all dependencies have finished: tagging dev branch (repo: ${repo})`);
-
-            await update_repo(repo);
-            await push(repo, "dev");
-
-            const workflow_id = await create_tag("GTNewHorizons", repo, tag, "dev");
-
-            logger.info(`Created and pushed ${tag} for dev (repo: ${repo}, workflow: ${workflow_id})`);
-
-            // Overwrite the master workflow
-            if (workflow_id) workflows[repo] = workflow_id;
         }
     } finally {
         // delete repo

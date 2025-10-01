@@ -5,6 +5,8 @@ import { logger } from "../entry_point";
 import path from "path";
 import fs from "fs";
 import { wait } from "../mmxxl_utils";
+import { sprintf } from "sprintf-js";
+import { NEWLINE } from "./prs";
 
 function isDigit(c: string): boolean {
     return c.charCodeAt(0) >= '0'.charCodeAt(0) && c.charCodeAt(0) <= '9'.charCodeAt(0);
@@ -12,39 +14,95 @@ function isDigit(c: string): boolean {
 
 const PRE = "-pre";
 
-export function increment_tag(tag: string, pre: boolean): string {
-    if (tag.endsWith(PRE)) {
-        tag = tag.substring(0, tag.length - PRE.length);
+export type ParsedTag = {
+    format: string,
+    values: number[],
+};
+
+export function parse_tag(tag: string): ParsedTag {
+    var i = 0;
+
+    var start = 0;
+    var wasDigit: boolean | null = null;
+
+    var format = "";
+    var values: number[] = [];
+
+    while (i < tag.length) {
+        const digit = isDigit(tag.substring(i, i + 1));
+
+        if (wasDigit != digit) {
+            const str = tag.substring(start, i);
+
+            if (wasDigit) {
+                values.push(parseInt(str));
+                format += "%d";
+            } else {
+                format += str;
+            }
+
+            start = i;
+            wasDigit = digit;
+        }
+
+        i++;
     }
 
-    var end = _.findLastIndex(tag, isDigit);
-    var start = _.findLastIndex(tag, x => !isDigit(x), end);
+    if (start < i) {
+        const str = tag.substring(start, i);
 
-    start++;
-    end++;
+        if (wasDigit) {
+            values.push(parseInt(str));
+            format += "%d";
+        } else {
+            format += str;
+        }
+    }
 
-    var version = parseInt(tag.substring(start, end));
+    return {
+        format,
+        values
+    };
+}
 
-    version++;
+export function stringify_tag(tag: ParsedTag): string {
+    return sprintf(tag.format, ...tag.values);
+}
 
-    var newTag = tag.substring(0, start) + version + tag.substring(end);
+export function increment_tag(tag: ParsedTag, pre: boolean): string {
+    if (tag.format.endsWith(PRE)) {
+        tag.format = tag.format.substring(0, tag.format.length - PRE.length);
+    }
 
     if (pre) {
-        newTag += PRE;
+        tag.format += PRE;
     }
 
-    return newTag;
+    tag.values[tag.values.length - 1]++;
+
+    return stringify_tag(tag);
 }
 
-export async function get_latest_tag(repo: string, branch: string = "HEAD"): Promise<string> {
+export async function get_latest_tag(repo: string, branch: string = "HEAD"): Promise<ParsedTag> {
     const result = await exec(`git describe --abbrev=0 --tags ${branch}`, { cwd: get_repo_path(repo) });
 
-    return result.stdout.trim();
+    return parse_tag(result.stdout.trim());
 }
 
-export type ActionId = number;
+export async function get_latest_tags(repo: string): Promise<ParsedTag[]> {
+    try {
+        const result = await exec(`git tag -l | tail -n 5`, { cwd: get_repo_path(repo) });
+    
+        const lines = result.stdout.split(NEWLINE);
 
-export async function create_tag(owner: string, repo: string, tag_name: string, base: string = "HEAD"): Promise<ActionId | null> {
+        return _.map(lines, parse_tag);
+    } catch (e) {
+        logger.info(`Could not get latest 5 tags for ${repo}:}: ${e}`);
+        return [];
+    }
+}
+
+export async function create_tag(owner: string, repo: string, tag_name: string, base: string = "HEAD") {
     await exec(`git tag -f ${tag_name} ${base}`, { cwd: get_repo_path(repo) });
 
     await exec(`git push origin tag ${tag_name}`, { cwd: get_repo_path(repo) });
@@ -54,13 +112,13 @@ export async function create_tag(owner: string, repo: string, tag_name: string, 
 
         await wait(1000);
 
-        var check_suite_id: number | undefined, tries: number = 0;
+        var tries: number = 0;
 
-        do {
+        while (true) {
             tries++;
 
             if (tries > 3) {
-                logger.error(`Could not find action run for ${sha} after 3 retries: assuming it was cancelled`);
+                logger.error(`Could not find action run for commit ${sha} after 3 retries: assuming it was cancelled`);
                 return null;
             }
 
@@ -68,7 +126,8 @@ export async function create_tag(owner: string, repo: string, tag_name: string, 
                 owner,
                 repo,
                 event: "push",
-                head_sha: sha
+                head_sha: sha,
+                per_page: 1
             })).data;
 
             if (resp.total_count == 0) {
@@ -78,66 +137,100 @@ export async function create_tag(owner: string, repo: string, tag_name: string, 
 
                 continue;
             } else {
-                check_suite_id = resp.workflow_runs[0].check_suite_id;
-            }
-        } while (!check_suite_id);
+                logger.info(`Found active action for ${sha}: https://github.com/${owner}/${repo}/actions/runs/${resp.workflow_runs[0].id}`);
 
-        return check_suite_id;
+                return sha;
+            }
+        }
     } else {
         return null;
     }
 }
 
-export async function get_action_state(owner: string, repo: string, run_id: ActionId): Promise<"unknown" | "in-progress" | "failed" | "completed"> {
-    try {
-        const resp = (await octokit.request("GET /repos/{owner}/{repo}/actions/runs/{run_id}", {
-            owner,
-            repo,
-            run_id
-        })).data;
-    
-        const status = resp.status;
+export type Action = {
+    state: "unknown" | "in-progress" | "failed" | "completed";
+    id: number;
+};
 
-        const lookup = {
-            "completed" : "completed",
-            "action_required" : "unknown",
-            "cancelled" : "failed",
-            "failure" : "failed",
-            "neutral": "failed",
-            "skipped": "failed",
-            "stale": "failed",
-            "success" : "completed",
-            "timed_out" : "failed",
-            "in_progress" : "in-progess",
-            "queued" : "in-progess",
-            "requested" : "in-progess",
-            "waiting" : "in-progess",
-            "pending" : "in-progess",
-        };
+export async function get_action_state(owner: string, repo: string, ref: string): Promise<Action | null> {
+    const resp = (await octokit.request("GET /repos/{owner}/{repo}/actions/runs", {
+        owner,
+        repo,
+        event: "push",
+        head_sha: ref,
+        per_page: 1
+    })).data;
 
-        return status && lookup[status] || "unknown";
-    } catch (e) {
-        logger.error(`Could not find action https://github.com/${owner}/${repo}/actions/runs/${run_id}: ${e}`);
-        return "failed";
-    }
+    if (resp.workflow_runs.length == 0) return null;
+
+    const status = resp.workflow_runs[0].status;
+
+    const lookup = {
+        "completed" : "completed",
+        "action_required" : "unknown",
+        "cancelled" : "failed",
+        "failure" : "failed",
+        "neutral": "failed",
+        "skipped": "failed",
+        "stale": "failed",
+        "success" : "completed",
+        "timed_out" : "failed",
+        "in_progress" : "in-progess",
+        "queued" : "in-progess",
+        "requested" : "in-progess",
+        "waiting" : "in-progess",
+        "pending" : "in-progess",
+    };
+
+    return {
+        state: status && lookup[status] || "unknown",
+        id: resp.workflow_runs[0].id
+    };
 }
 
-export async function wait_for_action(owner: string, repo: string, run_id: ActionId) {
-    const state = await get_action_state(owner, repo, run_id);
+export async function wait_for_action(owner: string, repo: string, ref: string) {
+    const action = await get_action_state(owner, repo, ref);
 
-    if (state == "completed") return true;
+    if (action?.state == "completed") {
+        logger.info(`Action https://github.com/${owner}/${repo}/actions/runs/${action.id} was already finished`);
+        return true;
+    }
 
-    logger.info(`Waiting for action https://github.com/${owner}/${repo}/actions/runs/${run_id} to finish`);
+    if (action) {
+        logger.info(`Waiting for action https://github.com/${owner}/${repo}/actions/runs/${action.id} to finish`);
+    } else {
+        logger.info(`Waiting for action for ${owner}/${repo}:${ref} to start`);
+    }
 
+    logger.info("Sleeping for 2 minutes");
     await wait(1000 * 60 * 2);
 
     for (var i = 0; i < 6; i++) {
-        const state = await get_action_state(owner, repo, run_id);
+        const action = await get_action_state(owner, repo, ref);
     
-        if (state != "unknown" && state != "in-progress") return state == "completed";
+        if (action && action?.state != "unknown" && action?.state != "in-progress") {
+            if (action.state == "completed") {
+                return true;
+            } else {
+                logger.info(`Action https://github.com/${owner}/${repo}/actions/runs/${action.id} failed`);
+                return false;
+            }
+        }
     
+        logger.info("Sleeping for 1 minute");
         await wait(1000 * 60);
     }
 
     return false;
+}
+
+export async function get_tag_for_ref(repo: string, ref: string) {
+    try {
+        const result = await exec(`git describe --tags --exact-match ${ref}`, { cwd: get_repo_path(repo) });
+    
+        return result.stdout.trim();
+    } catch (e) {
+        logger.info(`Ref ${repo}:${ref} was not tagged: ${e}`);
+        return null;
+    }
 }

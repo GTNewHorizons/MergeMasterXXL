@@ -3,6 +3,7 @@ import { octokit } from "./types";
 import { dryrun, logger } from "../entry_point";
 import { Commit } from "./repos";
 import yaml from "yaml";
+import { NEWLINE } from "./prs";
 
 export async function get_branch_update_time(repo: string, branch: string): Promise<Date | null> {
     try {
@@ -32,24 +33,34 @@ export async function delete_dev(repo: string) {
 }
 
 export async function get_branch_commits(repo: string, branch: string): Promise<Commit[]> {
-    const result = await octokit.request("GET /repos/{owner}/{repo}/commits", {
-        owner: "GTNewHorizons",
-        repo,
-        sha: branch,
-        per_page: 5,
-    });
+    try {
+        const result = await octokit.request("GET /repos/{owner}/{repo}/commits", {
+            owner: "GTNewHorizons",
+            repo,
+            sha: branch,
+            per_page: 5,
+        });
+    
+        return _.map(result.data, commit => {
+            
+            const lines = commit.commit.message.split(NEWLINE);
 
-    return _.map(result.data, commit => ({
-        commit: commit.sha,
-        author_name: commit.author?.name,
-        author_email: commit.author?.email,
-        author_date: (commit.author as any)?.date,
-        committer_name: commit.committer?.name,
-        committer_email: commit.committer?.email,
-        committer_date: (commit.committer as any)?.date,
-        subject: commit.commit.message,
-        message: "",
-    } as Commit));
+            return {
+                commit: commit.sha,
+                author_name: commit.commit.author?.name,
+                author_email: commit.commit.author?.email,
+                author_date: (commit.commit.author as any)?.date,
+                committer_name: commit.commit.committer?.name,
+                committer_email: commit.commit.committer?.email,
+                committer_date: (commit.commit.committer as any)?.date,
+                subject: lines[0],
+                message: lines.slice(1).join("\n").trim(),
+            } as Commit;
+        });
+    } catch (e) {
+        logger.info(`Could not get commits for ${repo}:${branch}: ${e}`);
+        return [];
+    }
 }
 
 export type DevBranchStatus = {

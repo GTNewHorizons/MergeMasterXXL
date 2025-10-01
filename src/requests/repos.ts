@@ -9,6 +9,7 @@ import { promisify } from "util";
 import { logger } from "../entry_point";
 import { clone_scratchpad } from "../env";
 import fs from "fs";
+import { parseStringPromise } from "xml2js";
 
 const exec0 = promisify(child_process.exec);
 export const exec: typeof exec0 = function(...args: any[]) {
@@ -42,11 +43,15 @@ export async function clone_repo(repo: string, owner: string = "GTNewHorizons"):
     await exec(`git config user.name MergeMasterXXL`, { cwd: repo_path });
     await exec(`git config user.email 'N/A'`, { cwd: repo_path });
 
-    logger.info(`Cloned ${owner}/${repo} to ${repo_path}`);
+    logger.info(`Cloned ${owner}/${repo}`);
 }
 
 export async function delete_branch(repo: string, branch: string) {
-    await exec(`git branch -D '${branch}'`, { cwd: get_repo_path(repo) });
+    try {
+        await exec(`git branch -D '${branch}'`, { cwd: get_repo_path(repo) });
+    } catch (e) {
+        logger.info(`Could not delete branch ${repo}:${branch}: ${e}`);
+    }
 }
 
 export async function checkout_branch(repo: string, branch: string) {
@@ -122,7 +127,7 @@ export async function get_commits(repo: string, ref: string): Promise<Commit[]> 
     }
 }
 
-export async function commit(repo: string, subject: string, message?: string) {
+export async function commit(repo: string, subject: string, message?: string, amend: boolean = false) {
     var lines = [
         subject || ""
     ];
@@ -135,7 +140,7 @@ export async function commit(repo: string, subject: string, message?: string) {
     }
 
     await exec(`git add -A`, { cwd: get_repo_path(repo) });
-    await exec(`git commit --no-edit --allow-empty -m '${lines.join("\n")}'`, { cwd: get_repo_path(repo) });
+    await exec(`git commit --no-edit --allow-empty ${amend ? "--amend" : ""} -m '${lines.join("\n")}'`, { cwd: get_repo_path(repo) });
 }
 
 export async function force_push(repo: string, branch: string) {
@@ -156,13 +161,56 @@ export async function spotless_apply(repo: string) {
     }
 }
 
-export async function update_repo(repo: string) {
+export async function update_repo(repo: string, tag_overrides: {[repo:string]: string}) {
     if (fs.existsSync(path.join(get_repo_path(repo), "gradlew"))) {
         logger.info(`Updating dependencies and buildscript (as needed) for ${repo}`);
 
-        await exec(`./gradlew updateDependencies`, { cwd: get_repo_path(repo) });
+        await update_to_pres(repo, tag_overrides);
         await exec(`./gradlew updateBuildscript`, { cwd: get_repo_path(repo) });
 
-        await commit(repo, "update");
+        const commits = await get_commits(repo, "HEAD -n 1");
+
+        const ammend = commits[0] && commits[0].subject == "update";
+
+        await commit(repo, "update", undefined, ammend);
     }
+}
+
+const GTNH_DEP = /com\.github\.GTNewHorizons:(?<repo>[^:]+):(?<version>[^:'"]+)(?<stream>:[^:'"]+)?/;
+
+async function update_to_pres(repo: string, tag_overrides: {[repo:string]: string}) {
+    const lines = fs.readFileSync(path.join(get_repo_path(repo), "dependencies.gradle")).toString().split("\n");
+
+    var changed = false;
+
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+
+        const match = GTNH_DEP.exec(line);
+
+        if (match && match.groups) {
+            const latest = tag_overrides[match.groups["repo"]] || await get_latest_release(match.groups["repo"]);
+
+            if (latest && latest != match.groups["version"]) {
+                logger.info(`Updated ${match.groups["repo"]}: ${match.groups["version"]} -> ${latest}`);
+
+                line = line.replace(match.groups["version"], latest);
+
+                lines[i] = line;
+                changed = true;
+            }
+        }
+    }
+
+    if (changed) {
+        fs.writeFileSync(path.join(get_repo_path(repo), "dependencies.gradle"), lines.join("\n"));
+    }
+}
+
+async function get_latest_release(repo: string){
+    const resp: string = (await axios.get(`https://nexus.gtnewhorizons.com/repository/public/com/github/GTNewHorizons/${repo}/maven-metadata.xml`, { responseType: "document" })).data;
+
+    const doc = await parseStringPromise(resp);
+
+    return doc.metadata.versioning[0].latest;
 }

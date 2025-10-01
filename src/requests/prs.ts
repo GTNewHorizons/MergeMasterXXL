@@ -84,8 +84,8 @@ const BLOCKER_LABELS = ["affects balance", "not ready for testing"];
 /** PR cannot be reverted and the experimental must be cancelled if the PR could not be included after it was previously included */
 export const NOT_REVERTABLE = "Not Revertable";
 
-const NEWLINE = /[\n\r]+/;
-const PR_HASH = /#(?<pr>\d+)/;
+export const NEWLINE = /[\n\r]+/;
+const PR_HASH = /^#(?<pr>\d+)$/;
 
 export type PRInfo = {
     prs: PullRequest[];
@@ -192,7 +192,8 @@ export async function get_prs(repo: string): Promise<PRInfo> {
     };
 }
 
-const PR_URL = /https:\/\/github\.com\/(?<group>[\w\d\-]+)\/(?<repo>[\w\d\-]+)\/pull\/(?<pr>\d+)/;
+const PR_URL = /^https:\/\/github\.com\/(?<group>[\w\d\-]+)\/(?<repo>[\w\d\-]+)\/pull\/(?<pr>\d+)$/;
+const PR_SHORT = /^(?<group>\w+)\/(?<repo>[\w\d\-]+)#(?<pr>\d+)$/;
 
 export type PRId = {
     group: string;
@@ -200,8 +201,12 @@ export type PRId = {
     pr: number;
 };
 
-export function parse_pr(permalink: string): PRId | null {
-    const matcher = PR_URL.exec(permalink);
+export function parse_pr(pr: string): PRId | null {
+    var matcher = PR_URL.exec(pr);
+
+    if (!matcher || !matcher.groups) {
+        matcher = PR_SHORT.exec(pr);
+    }
 
     if (!matcher || !matcher.groups) return null;
 
