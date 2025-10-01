@@ -8,9 +8,10 @@ import child_process from "child_process";
 import { promisify } from "util";
 import { logger } from "../entry_point";
 import { clone_scratchpad } from "../env";
+import fs from "fs";
 
 const exec0 = promisify(child_process.exec);
-const exec: typeof exec0 = function(...args: any[]) {
+export const exec: typeof exec0 = function(...args: any[]) {
     logger.info(`Executing: ${arguments[0]}`);
     return (exec0 as any)(...args);
 };
@@ -37,7 +38,6 @@ export async function clone_repo(repo: string, owner: string = "GTNewHorizons"):
     // await exec(`git clone git@github.com:${owner}/${repo}.git`, { cwd: clone_scratchpad });
 
     const repo_path = get_repo_path(repo);
-    console.log("repo_path: " + repo_path);
 
     await exec(`git config user.name MergeMasterXXL`, { cwd: repo_path });
     await exec(`git config user.email 'N/A'`, { cwd: repo_path });
@@ -92,12 +92,12 @@ const COMMIT_FORMAT = {
     committer_email: "%cE",
     committer_date: "%ci",
     subject: "%f",
-    message: "%b",
 };
 
 export async function get_commits(repo: string, ref: string): Promise<Commit[]> {
     try {
-        const result = await exec(`git log --pretty=format:"${JSON.stringify(COMMIT_FORMAT).replaceAll('"', '§')}, %n" ${ref}`, { cwd: get_repo_path(repo) });
+        const format = JSON.stringify(COMMIT_FORMAT).replaceAll('"', '§');
+        const result = await exec(`git log --pretty=format:"${format}, " ${ref}`, { cwd: get_repo_path(repo) });
 
         var stdout = result.stdout.trim();
 
@@ -106,15 +106,13 @@ export async function get_commits(repo: string, ref: string): Promise<Commit[]> 
         }
 
         stdout = stdout.replaceAll('§', '"');
-        stdout = stdout.replaceAll('\n', '\\n');
-
-        console.log(stdout);
 
         const commits: Commit[] = JSON.parse(`[${stdout}]`);
 
         for (const commit of commits) {
             commit.author_date = new Date(commit.author_date);
             commit.committer_date = new Date(commit.committer_date);
+            commit.message = (await exec(`git log --pretty=format:"%b" ${commit.commit}`, { cwd: get_repo_path(repo) })).stdout.trim();
         }
 
         return commits;
@@ -124,7 +122,7 @@ export async function get_commits(repo: string, ref: string): Promise<Commit[]> 
     }
 }
 
-export async function commit(repo: string, subject: string, message: String) {
+export async function commit(repo: string, subject: string, message?: string) {
     var lines = [
         subject || ""
     ];
@@ -141,5 +139,30 @@ export async function commit(repo: string, subject: string, message: String) {
 }
 
 export async function force_push(repo: string, branch: string) {
-    await exec(`git push -f -u origin ${branch}`, { cwd: get_repo_path(repo) });
+    await exec(`git push -f origin ${branch}`, { cwd: get_repo_path(repo) });
+}
+
+export async function push(repo: string, branch: string) {
+    await exec(`git push origin ${branch}`, { cwd: get_repo_path(repo) });
+}
+
+export async function spotless_apply(repo: string) {
+    if (fs.existsSync(path.join(get_repo_path(repo), "gradlew"))) {
+        logger.info(`Applying spotless for ${repo}`);
+
+        await exec(`./gradlew spotlessApply`, { cwd: get_repo_path(repo) });
+
+        await commit(repo, "sa");
+    }
+}
+
+export async function update_repo(repo: string) {
+    if (fs.existsSync(path.join(get_repo_path(repo), "gradlew"))) {
+        logger.info(`Updating dependencies and buildscript (as needed) for ${repo}`);
+
+        await exec(`./gradlew updateDependencies`, { cwd: get_repo_path(repo) });
+        await exec(`./gradlew updateBuildscript`, { cwd: get_repo_path(repo) });
+
+        await commit(repo, "update");
+    }
 }

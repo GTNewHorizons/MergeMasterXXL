@@ -23,6 +23,7 @@
     "@types/lodash": "^4.17.20",
     "@types/yaml": "^1.9.7",
     "axios": "^1.12.2",
+    "dependency-graph": "^1.0.0",
     "dotenv": "^17.2.2",
     "lodash": "^4.17.21",
     "pino": "^9.11.0",

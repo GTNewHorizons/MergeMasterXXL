@@ -1,5 +1,7 @@
 import _ from "lodash";
 import { GQList, NamedObject, octokit } from "./types";
+import { logger } from "../entry_point";
+import { DepGraph } from "dependency-graph";
 
 export type BranchName = string;
 
@@ -8,10 +10,7 @@ export type DateString = string;
 
 export type ReviewDecision = "REVIEW_REQUIRED" | "CHANGES_REQUESTED" | "APPROVED" | null;
 
-export type PRDependency = {
-    repo: string;
-    pr: number;
-};
+export type PRDependency = string;
 
 export type PullRequest = {
     labels: {
@@ -80,17 +79,17 @@ query($repo: String!, $cursor: String) {
 }
 `;
 
-const BLOCKER_LABELS = ["Affects Balance", "Not Ready for Testing"];
+const BLOCKER_LABELS = ["affects balance", "not ready for testing"];
 
 /** PR cannot be reverted and the experimental must be cancelled if the PR could not be included after it was previously included */
 export const NOT_REVERTABLE = "Not Revertable";
 
 const NEWLINE = /[\n\r]+/;
-const DEPENDENCY = /(depends on\:)\s+(https\:\/\/github.com\/GTNewHorizons)?(?<repo>\\w+)\/(?<pr>\\d+)/;
+const PR_HASH = /#(?<pr>\d+)/;
 
 export type PRInfo = {
     prs: PullRequest[];
-    dependencies: PRDependency[];
+    dependencies: PRId[];
 }
 
 export async function get_prs(repo: string): Promise<PRInfo> {
@@ -112,9 +111,15 @@ export async function get_prs(repo: string): Promise<PRInfo> {
 
     const validPRs = _.filter(allPRs, {baseRefName: "master", isDraft: false, isInMergeQueue: false, locked: false});
 
+    for (const pr of validPRs) {
+        for (const label of pr.labels.nodes) {
+            label.name = label.name.toLowerCase();
+        }
+    }
+
     _.remove(validPRs, pr => {
         for (const label of pr.labels.nodes) {
-            if (_.find(BLOCKER_LABELS, label.name)) {
+            if (_.includes(BLOCKER_LABELS, label.name)) {
                 return true;
             }
         }
@@ -122,32 +127,104 @@ export async function get_prs(repo: string): Promise<PRInfo> {
         return false;
     });
 
-    const allDeps: PRDependency[] = [];
+    const graph = new DepGraph();
 
+    for (const pr of validPRs) {
+        graph.addNode(pr.permalink);
+    }
+
+    const crossRepoDeps: PRId[] = [];
+
+    const invalidPRs: string[] = [];
+
+    outer:
     for (const pr of validPRs) {
         const lines = pr.bodyText.split(NEWLINE);
 
         pr.dependencies = [];
 
         for (const line of lines) {
-            const match = DEPENDENCY.exec(line);
+            if (!line.startsWith("depends on:")) continue;
 
-            if (!match || !match.groups) continue;
+            var dep = line.replace("depends on:", "").trim();
 
-            const dep = {
-                repo: match.groups["repo"],
-                pr: Number(match.groups["pr"]),
-            };
+            const hash = PR_HASH.exec(dep);
 
-            pr.dependencies.push(dep);
-            allDeps.push(dep);
+            if (hash && hash.groups) {
+                dep = stringify_pr({
+                    group: "GTNewHorizons",
+                    repo,
+                    pr: parseInt(hash.groups["pr"])
+                });
+            }
+
+            const pr_id = parse_pr(dep);
+
+            if (!pr_id) {
+                logger.error(`PR ${pr.permalink} depends on invalid PR ${dep}: it will be removed from this release`);
+                invalidPRs.push(pr.permalink);
+                continue outer;
+            }
+
+            if (!graph.hasNode(dep)) {
+                graph.addNode(dep);
+            }
+
+            graph.addDependency(pr.permalink, dep);
+
+            pr.dependencies.push(line.trim());
+
+            if (pr_id.group != "GTNewHorizons" || pr_id.repo != repo) {
+                crossRepoDeps.push(pr_id);
+            }
         }
     }
 
-    _.sortBy(validPRs, "number");
+    _.forEach(invalidPRs, pr => _.remove(validPRs));
+
+    const order = graph.overallOrder();
+
+    validPRs.sort(pr => order.indexOf(pr.permalink));
 
     return {
         prs: validPRs,
-        dependencies: allDeps
+        dependencies: crossRepoDeps
     };
+}
+
+const PR_URL = /https:\/\/github\.com\/(?<group>[\w\d\-]+)\/(?<repo>[\w\d\-]+)\/pull\/(?<pr>\d+)/;
+
+export type PRId = {
+    group: string;
+    repo: string;
+    pr: number;
+};
+
+export function parse_pr(permalink: string): PRId | null {
+    const matcher = PR_URL.exec(permalink);
+
+    if (!matcher || !matcher.groups) return null;
+
+    return {
+        group: matcher.groups["group"],
+        repo: matcher.groups["repo"],
+        pr: parseInt(matcher.groups["pr"]),
+    };
+}
+
+export function stringify_pr(pr: PRId) {
+    return `https://github.com/${pr.group}/${pr.repo}/pull/${pr.pr}`;
+}
+
+export async function get_pr(pr: PRId) {
+    try {
+        return (await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+            owner: pr.group,
+            repo: pr.repo,
+            pull_number: pr.pr
+        })).data;
+    } catch (e) {
+        logger.error(`Could not find PR ${stringify_pr(pr)}: ${e}`);
+        return null;
+    }
 }
