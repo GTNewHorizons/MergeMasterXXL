@@ -1,14 +1,16 @@
 import _ from "lodash";
 import { octokit } from "./types";
 import { dryrun, logger } from "../entry_point";
-import { Commit } from "./repos";
+import { Commit, parse_repo_id, RepoId } from "./repos";
 import yaml from "yaml";
 import { NEWLINE } from "./prs";
 
-export async function get_branch_update_time(repo: string, branch: string): Promise<Date | null> {
+export async function get_branch_update_time(repo_id: RepoId, branch: string): Promise<Date | null> {
     try {
+        const { owner, repo } = parse_repo_id(repo_id);
+
         const resp = await octokit.request('GET /repos/{owner}/{repo}/branches/{branch}', {
-            owner: "GTNewHorizons",
+            owner,
             repo,
             branch,
         });
@@ -22,20 +24,24 @@ export async function get_branch_update_time(repo: string, branch: string): Prom
     }
 }
 
-export async function delete_dev(repo: string) {
+export async function delete_dev(repo_id: RepoId) {
     if (dryrun) return;
 
+    const { owner, repo } = parse_repo_id(repo_id);
+
     await octokit.request("DELETE /repos/{owner}/{repo}/branches/{branch}", {
-        owner: "GTNewHorizons",
+        owner,
         repo,
         branch: "dev",
     });
 }
 
-export async function get_branch_commits(repo: string, branch: string): Promise<Commit[]> {
+export async function get_branch_commits(repo_id: RepoId, branch: string): Promise<Commit[]> {
     try {
+        const { owner, repo } = parse_repo_id(repo_id);
+    
         const result = await octokit.request("GET /repos/{owner}/{repo}/commits", {
-            owner: "GTNewHorizons",
+            owner,
             repo,
             sha: branch,
             per_page: 5,
@@ -58,7 +64,7 @@ export async function get_branch_commits(repo: string, branch: string): Promise<
             } as Commit;
         });
     } catch (e) {
-        logger.info(`Could not get commits for ${repo}:${branch}: ${e}`);
+        logger.info(`Could not get commits for ${repo_id}:${branch}: ${e}`);
         return [];
     }
 }

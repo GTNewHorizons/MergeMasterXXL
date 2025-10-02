@@ -1,5 +1,5 @@
 import _ from "lodash";
-import { exec, get_repo_path } from "./repos";
+import { exec, get_repo_path, parse_repo_id, RepoId } from "./repos";
 import { octokit } from "./types";
 import { logger } from "../entry_point";
 import path from "path";
@@ -83,32 +83,34 @@ export function increment_tag(tag: ParsedTag, pre: boolean): string {
     return stringify_tag(tag);
 }
 
-export async function get_latest_tag(repo: string, branch: string = "HEAD"): Promise<ParsedTag> {
-    const result = await exec(`git describe --abbrev=0 --tags ${branch}`, { cwd: get_repo_path(repo) });
+export async function get_latest_tag(repo_id: RepoId, branch: string = "HEAD"): Promise<ParsedTag> {
+    const result = await exec(`git describe --abbrev=0 --tags ${branch}`, { cwd: get_repo_path(repo_id) });
 
     return parse_tag(result.stdout.trim());
 }
 
-export async function get_latest_tags(repo: string): Promise<ParsedTag[]> {
+export async function get_latest_tags(repo_id: RepoId): Promise<ParsedTag[]> {
     try {
-        const result = await exec(`git tag -l | tail -n 5`, { cwd: get_repo_path(repo) });
+        const result = await exec(`git tag -l | tail -n 5`, { cwd: get_repo_path(repo_id) });
     
         const lines = result.stdout.split(NEWLINE);
 
         return _.map(lines, parse_tag);
     } catch (e) {
-        logger.info(`Could not get latest 5 tags for ${repo}:}: ${e}`);
+        logger.info(`Could not get latest 5 tags for ${repo_id}: ${e}`);
         return [];
     }
 }
 
-export async function create_tag(owner: string, repo: string, tag_name: string, base: string = "HEAD") {
-    await exec(`git tag -f ${tag_name} ${base}`, { cwd: get_repo_path(repo) });
+export async function create_tag(repo_id: RepoId, tag_name: string, base: string = "HEAD") {
+    const { owner, repo } = parse_repo_id(repo_id);
 
-    await exec(`git push origin tag ${tag_name}`, { cwd: get_repo_path(repo) });
+    await exec(`git tag -f ${tag_name} ${base}`, { cwd: get_repo_path(repo_id) });
 
-    if (fs.existsSync(path.join(get_repo_path(repo), ".github", "workflows", "release-tags.yml"))) {
-        const sha = (await exec(`git rev-parse ${base}`, { cwd: get_repo_path(repo) })).stdout.trim();
+    await exec(`git push origin tag ${tag_name}`, { cwd: get_repo_path(repo_id) });
+
+    if (fs.existsSync(path.join(get_repo_path(repo_id), ".github", "workflows", "release-tags.yml"))) {
+        const sha = (await exec(`git rev-parse ${base}`, { cwd: get_repo_path(repo_id) })).stdout.trim();
 
         await wait(1000);
 
@@ -152,7 +154,9 @@ export type Action = {
     id: number;
 };
 
-export async function get_action_state(owner: string, repo: string, ref: string): Promise<Action | null> {
+export async function get_action_state(repo_id: RepoId, ref: string): Promise<Action | null> {
+    const { owner, repo } = parse_repo_id(repo_id);
+
     const resp = (await octokit.request("GET /repos/{owner}/{repo}/actions/runs", {
         owner,
         repo,
@@ -188,8 +192,10 @@ export async function get_action_state(owner: string, repo: string, ref: string)
     };
 }
 
-export async function wait_for_action(owner: string, repo: string, ref: string) {
-    const action = await get_action_state(owner, repo, ref);
+export async function wait_for_action(repo_id: RepoId, ref: string) {
+    const { owner, repo } = parse_repo_id(repo_id);
+
+    const action = await get_action_state(repo_id, ref);
 
     if (action?.state == "completed") {
         logger.info(`Action https://github.com/${owner}/${repo}/actions/runs/${action.id} was already finished`);
@@ -206,7 +212,7 @@ export async function wait_for_action(owner: string, repo: string, ref: string) 
     await wait(1000 * 60 * 2);
 
     for (var i = 0; i < 6; i++) {
-        const action = await get_action_state(owner, repo, ref);
+        const action = await get_action_state(repo_id, ref);
     
         if (action && action?.state != "unknown" && action?.state != "in-progress") {
             if (action.state == "completed") {
@@ -224,13 +230,13 @@ export async function wait_for_action(owner: string, repo: string, ref: string) 
     return false;
 }
 
-export async function get_tag_for_ref(repo: string, ref: string) {
+export async function get_tag_for_ref(repo_id: RepoId, ref: string) {
     try {
-        const result = await exec(`git describe --tags --exact-match ${ref}`, { cwd: get_repo_path(repo) });
+        const result = await exec(`git describe --tags --exact-match ${ref}`, { cwd: get_repo_path(repo_id) });
     
         return result.stdout.trim();
     } catch (e) {
-        logger.info(`Ref ${repo}:${ref} was not tagged: ${e}`);
+        logger.info(`Ref ${repo_id}:${ref} was not tagged: ${e}`);
         return null;
     }
 }

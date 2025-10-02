@@ -2,6 +2,7 @@ import _ from "lodash";
 import { GQList, NamedObject, octokit } from "./types";
 import { logger } from "../entry_point";
 import { DepGraph } from "dependency-graph";
+import { parse_repo_id, RepoId, RepoInfo } from "./repos";
 
 export type BranchName = string;
 
@@ -10,7 +11,10 @@ export type DateString = string;
 
 export type ReviewDecision = "REVIEW_REQUIRED" | "CHANGES_REQUESTED" | "APPROVED" | null;
 
-export type PRDependency = string;
+export type PRId = {
+    repo_id: RepoInfo;
+    pr: number;
+};
 
 export type PullRequest = {
     labels: {
@@ -31,7 +35,7 @@ export type PullRequest = {
     reviewDecision: ReviewDecision,
     title: string,
     updatedAt: string,
-    dependencies: PRDependency[],
+    dependencies: PRId[],
 };
 
 type Q = {
@@ -43,8 +47,8 @@ type Q = {
 };
 
 const query = `
-query($repo: String!, $cursor: String) {
-    resource(url: "https://github.com/GTNewHorizons/") {
+query($org: URI!, $repo: String!, $cursor: String) {
+    resource(url: $org) {
         ... on Organization {
             repository(name: $repo) {
                 pullRequests(states: [OPEN], first: 100, after: $cursor) {
@@ -92,16 +96,17 @@ export type PRInfo = {
     dependencies: PRId[];
 }
 
-export async function get_prs(repo: string): Promise<PRInfo> {
+export async function get_prs(repo_id: RepoId): Promise<PRInfo> {
+    const { owner, repo } = parse_repo_id(repo_id);
 
-    const resp: Q = await octokit.graphql(query, { repo, cursor: null });
+    const resp: Q = await octokit.graphql(query, { org: `https://github.com/${owner}`, repo, cursor: null });
 
     const allPRs = [...resp.resource.repository.pullRequests.nodes];
 
     var pageInfo = resp.resource.repository.pullRequests.pageInfo;
 
     while (pageInfo.hasNextPage) {
-        const resp2: Q = await octokit.graphql(query, { repo, cursor: pageInfo.endCursor });
+        const resp2: Q = await octokit.graphql(query, { owner, repo, cursor: pageInfo.endCursor });
         pageInfo = resp2.resource.repository.pullRequests.pageInfo;
 
         for (const pr of resp2.resource.repository.pullRequests.nodes) {
@@ -109,7 +114,7 @@ export async function get_prs(repo: string): Promise<PRInfo> {
         }
     }
 
-    const validPRs = _.filter(allPRs, {baseRefName: "master", isDraft: false, isInMergeQueue: false, locked: false});
+    const validPRs = _.filter(allPRs, { baseRefName: "master", isDraft: false, isInMergeQueue: false, locked: false });
 
     for (const pr of validPRs) {
         for (const label of pr.labels.nodes) {
@@ -152,8 +157,10 @@ export async function get_prs(repo: string): Promise<PRInfo> {
 
             if (hash && hash.groups) {
                 dep = stringify_pr({
-                    group: "GTNewHorizons",
-                    repo,
+                    repo_id: {
+                        owner: "GTNewHorizons",
+                        repo
+                    },
                     pr: parseInt(hash.groups["pr"])
                 });
             }
@@ -161,10 +168,12 @@ export async function get_prs(repo: string): Promise<PRInfo> {
             const pr_id = parse_pr(dep);
 
             if (!pr_id) {
-                logger.error(`PR ${pr.permalink} depends on invalid PR ${dep}: it will be removed from this release`);
+                logger.error(`PR ${pr.permalink} depends on invalid PR '${dep}': it will be removed from this release`);
                 invalidPRs.push(pr.permalink);
                 continue outer;
             }
+
+            dep = stringify_pr(pr_id);
 
             if (!graph.hasNode(dep)) {
                 graph.addNode(dep);
@@ -172,15 +181,15 @@ export async function get_prs(repo: string): Promise<PRInfo> {
 
             graph.addDependency(pr.permalink, dep);
 
-            pr.dependencies.push(line.trim());
+            pr.dependencies.push(pr_id);
 
-            if (pr_id.group != "GTNewHorizons" || pr_id.repo != repo) {
+            if (pr_id.repo_id.owner != "GTNewHorizons" || pr_id.repo_id.repo != repo) {
                 crossRepoDeps.push(pr_id);
             }
         }
     }
 
-    _.forEach(invalidPRs, pr => _.remove(validPRs));
+    _.forEach(invalidPRs, pr => _.remove(validPRs, pr));
 
     const order = graph.overallOrder();
 
@@ -195,12 +204,6 @@ export async function get_prs(repo: string): Promise<PRInfo> {
 const PR_URL = /^https:\/\/github\.com\/(?<group>[\w\d\-]+)\/(?<repo>[\w\d\-]+)\/pull\/(?<pr>\d+)$/;
 const PR_SHORT = /^(?<group>\w+)\/(?<repo>[\w\d\-]+)#(?<pr>\d+)$/;
 
-export type PRId = {
-    group: string;
-    repo: string;
-    pr: number;
-};
-
 export function parse_pr(pr: string): PRId | null {
     var matcher = PR_URL.exec(pr);
 
@@ -211,21 +214,23 @@ export function parse_pr(pr: string): PRId | null {
     if (!matcher || !matcher.groups) return null;
 
     return {
-        group: matcher.groups["group"],
-        repo: matcher.groups["repo"],
+        repo_id: {
+            owner: matcher.groups["group"],
+            repo: matcher.groups["repo"]
+        },
         pr: parseInt(matcher.groups["pr"]),
     };
 }
 
 export function stringify_pr(pr: PRId) {
-    return `https://github.com/${pr.group}/${pr.repo}/pull/${pr.pr}`;
+    return `https://github.com/${pr.repo_id.owner}/${pr.repo_id.repo}/pull/${pr.pr}`;
 }
 
 export async function get_pr(pr: PRId) {
     try {
         return (await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
-            owner: pr.group,
-            repo: pr.repo,
+            owner: pr.repo_id.owner,
+            repo: pr.repo_id.repo,
             pull_number: pr.pr
         })).data;
     } catch (e) {

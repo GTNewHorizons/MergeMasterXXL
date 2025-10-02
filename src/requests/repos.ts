@@ -21,24 +21,58 @@ const repo_blacklist = [
     
 ];
 
-export async function get_repos(): Promise<string[]> {
+export type RepoId = string;
+export type RepoInfo = {
+    owner: string;
+    repo: string;
+};
+
+export function parse_repo_id(repo_id: RepoId): RepoInfo {
+    const chunks = _.filter(repo_id.split("/"), Boolean);
+
+    if (chunks.length == 1) {
+        return {
+            owner: "GTNewHorizons",
+            repo: chunks[0]
+        };
+    } else {
+        return {
+            owner: chunks[0],
+            repo: chunks[1]
+        };
+    }
+}
+
+export function stringify_repo_id(repo_info: RepoInfo): RepoId {
+    return `${repo_info.owner}/${repo_info.repo}`;
+}
+
+export function normalize_repo_id(repo_id: RepoId): RepoId {
+    return stringify_repo_id(parse_repo_id(repo_id));
+}
+
+export async function get_repos(): Promise<RepoId[]> {
     const data = await axios.get("https://raw.githubusercontent.com/GTNewHorizons/DreamAssemblerXXL/refs/heads/master/releases/manifests/experimental.json");
 
     const repos = _.keys(data.data.github_mods);
 
-    _.remove(repos, repo => _.find(repo_blacklist, repo));
+    _.remove(repos, repo => _.includes(repo_blacklist, repo));
 
     return repos;
 }
 
-export function get_repo_path(repo: string) {
-    return path.join(clone_scratchpad, repo);
+export function get_repo_path(repo_id: RepoId) {
+    const { owner, repo } = parse_repo_id(repo_id);
+    
+    return path.join(clone_scratchpad, owner, repo);
 }
 
-export async function clone_repo(repo: string, owner: string = "GTNewHorizons"): Promise<void> {
-    // await exec(`git clone git@github.com:${owner}/${repo}.git`, { cwd: clone_scratchpad });
+export async function clone_repo(repo_id: RepoId): Promise<void> {
+    const { owner, repo } = parse_repo_id(repo_id);
+    
+    const repo_path = get_repo_path(repo_id);
 
-    const repo_path = get_repo_path(repo);
+    await exec(`git clone git@github.com:${owner}/${repo}.git ${repo_path}`, { cwd: clone_scratchpad });
 
     await exec(`git config user.name MergeMasterXXL`, { cwd: repo_path });
     await exec(`git config user.email 'N/A'`, { cwd: repo_path });
@@ -46,17 +80,27 @@ export async function clone_repo(repo: string, owner: string = "GTNewHorizons"):
     logger.info(`Cloned ${owner}/${repo}`);
 }
 
-export async function delete_branch(repo: string, branch: string) {
+export async function unclone_repo(repo_id: RepoId): Promise<void> {
+    const { owner, repo } = parse_repo_id(repo_id);
+    const repo_path = get_repo_path(repo_id);
+    
+    await exec(`rm -rf ${repo_path}`, { cwd: clone_scratchpad });
+    await exec(`rmdir --ignore-fail-on-non-empty ${owner}`, { cwd: clone_scratchpad });
+
+    logger.info(`Uncloned ${owner}/${repo}`);
+}
+
+export async function delete_branch(repo_id: RepoId, branch: string) {
     try {
-        await exec(`git branch -D '${branch}'`, { cwd: get_repo_path(repo) });
+        await exec(`git branch -D '${branch}'`, { cwd: get_repo_path(repo_id) });
     } catch (e) {
-        logger.info(`Could not delete branch ${repo}:${branch}: ${e}`);
+        logger.info(`Could not delete branch ${repo_id}:${branch}: ${e}`);
     }
 }
 
-export async function checkout_branch(repo: string, branch: string) {
+export async function checkout_branch(repo_id: RepoId, branch: string) {
     try {
-        await exec(`git checkout ${branch}`, { cwd: get_repo_path(repo) });
+        await exec(`git checkout ${branch}`, { cwd: get_repo_path(repo_id) });
         return true;
     } catch (e) {
         logger.info(`Could not checkout branch ${branch}: ${e}`);
@@ -64,16 +108,16 @@ export async function checkout_branch(repo: string, branch: string) {
     }
 }
 
-export async function checkout_new_branch(repo: string, branch: string) {
-    await exec(`git checkout -b ${branch}`, { cwd: get_repo_path(repo) });
+export async function checkout_new_branch(repo_id: RepoId, branch: string) {
+    await exec(`git checkout -b ${branch}`, { cwd: get_repo_path(repo_id) });
 }
 
-export async function checkout_pr(repo: string, permalink: string) {
-    await exec(`gh pr checkout '${permalink}'`, { cwd: get_repo_path(repo) });
+export async function checkout_pr(repo_id: RepoId, permalink: string) {
+    await exec(`gh pr checkout '${permalink}'`, { cwd: get_repo_path(repo_id) });
 }
 
-export async function merge_branch(repo: string, source_branch: string) {
-    await exec(`git merge --no-edit --commit '${source_branch}'`, { cwd: get_repo_path(repo) });
+export async function merge_branch(repo_id: RepoId, source_branch: string) {
+    await exec(`git merge --no-edit --commit '${source_branch}'`, { cwd: get_repo_path(repo_id) });
 }
 
 export type Commit = {
@@ -99,10 +143,10 @@ const COMMIT_FORMAT = {
     subject: "%f",
 };
 
-export async function get_commits(repo: string, ref: string): Promise<Commit[]> {
+export async function get_commits(repo_id: RepoId, ref: string): Promise<Commit[]> {
     try {
         const format = JSON.stringify(COMMIT_FORMAT).replaceAll('"', '§');
-        const result = await exec(`git log --pretty=format:"${format}, " ${ref}`, { cwd: get_repo_path(repo) });
+        const result = await exec(`git log --pretty=format:"${format}, " ${ref}`, { cwd: get_repo_path(repo_id) });
 
         var stdout = result.stdout.trim();
 
@@ -117,7 +161,7 @@ export async function get_commits(repo: string, ref: string): Promise<Commit[]> 
         for (const commit of commits) {
             commit.author_date = new Date(commit.author_date);
             commit.committer_date = new Date(commit.committer_date);
-            commit.message = (await exec(`git log --pretty=format:"%b" ${commit.commit}`, { cwd: get_repo_path(repo) })).stdout.trim();
+            commit.message = (await exec(`git log --pretty=format:"%b" ${commit.commit}`, { cwd: get_repo_path(repo_id) })).stdout.trim();
         }
 
         return commits;
@@ -127,7 +171,7 @@ export async function get_commits(repo: string, ref: string): Promise<Commit[]> 
     }
 }
 
-export async function commit(repo: string, subject: string, message?: string, amend: boolean = false) {
+export async function commit(repo_id: RepoId, subject: string, message?: string, amend: boolean = false) {
     var lines = [
         subject || ""
     ];
@@ -139,47 +183,47 @@ export async function commit(repo: string, subject: string, message?: string, am
         ]);
     }
 
-    await exec(`git add -A`, { cwd: get_repo_path(repo) });
-    await exec(`git commit --no-edit --allow-empty ${amend ? "--amend" : ""} -m '${lines.join("\n")}'`, { cwd: get_repo_path(repo) });
+    await exec(`git add -A`, { cwd: get_repo_path(repo_id) });
+    await exec(`git commit --no-edit --allow-empty ${amend ? "--amend" : ""} -m '${lines.join("\n")}'`, { cwd: get_repo_path(repo_id) });
 }
 
-export async function force_push(repo: string, branch: string) {
-    await exec(`git push -f origin ${branch}`, { cwd: get_repo_path(repo) });
+export async function force_push(repo_id: RepoId, branch: string) {
+    await exec(`git push -f origin ${branch}`, { cwd: get_repo_path(repo_id) });
 }
 
-export async function push(repo: string, branch: string) {
-    await exec(`git push origin ${branch}`, { cwd: get_repo_path(repo) });
+export async function push(repo_id: RepoId, branch: string) {
+    await exec(`git push origin ${branch}`, { cwd: get_repo_path(repo_id) });
 }
 
-export async function spotless_apply(repo: string) {
-    if (fs.existsSync(path.join(get_repo_path(repo), "gradlew"))) {
-        logger.info(`Applying spotless for ${repo}`);
+export async function spotless_apply(repo_id: RepoId) {
+    if (fs.existsSync(path.join(get_repo_path(repo_id), "gradlew"))) {
+        logger.info(`Applying spotless for ${repo_id}`);
 
-        await exec(`./gradlew spotlessApply`, { cwd: get_repo_path(repo) });
+        await exec(`./gradlew spotlessApply`, { cwd: get_repo_path(repo_id) });
 
-        await commit(repo, "sa");
+        await commit(repo_id, "sa");
     }
 }
 
-export async function update_repo(repo: string, tag_overrides: {[repo:string]: string}) {
-    if (fs.existsSync(path.join(get_repo_path(repo), "gradlew"))) {
-        logger.info(`Updating dependencies and buildscript (as needed) for ${repo}`);
+export async function update_repo(repo_id: RepoId, tag_overrides: {[repo:string]: string}) {
+    if (fs.existsSync(path.join(get_repo_path(repo_id), "gradlew"))) {
+        logger.info(`Updating dependencies and buildscript (as needed) for ${repo_id}`);
 
-        await update_to_pres(repo, tag_overrides);
-        await exec(`./gradlew updateBuildscript`, { cwd: get_repo_path(repo) });
+        await update_to_pres(repo_id, tag_overrides);
+        await exec(`./gradlew updateBuildscript`, { cwd: get_repo_path(repo_id) });
 
-        const commits = await get_commits(repo, "HEAD -n 1");
+        const commits = await get_commits(repo_id, "HEAD -n 1");
 
         const ammend = commits[0] && commits[0].subject == "update";
 
-        await commit(repo, "update", undefined, ammend);
+        await commit(repo_id, "update", undefined, ammend);
     }
 }
 
 const GTNH_DEP = /com\.github\.GTNewHorizons:(?<repo>[^:]+):(?<version>[^:'"]+)(?<stream>:[^:'"]+)?/;
 
-async function update_to_pres(repo: string, tag_overrides: {[repo:string]: string}) {
-    const lines = fs.readFileSync(path.join(get_repo_path(repo), "dependencies.gradle")).toString().split("\n");
+async function update_to_pres(repo_id: RepoId, tag_overrides: {[repo:string]: string}) {
+    const lines = fs.readFileSync(path.join(get_repo_path(repo_id), "dependencies.gradle")).toString().split("\n");
 
     var changed = false;
 
@@ -203,12 +247,12 @@ async function update_to_pres(repo: string, tag_overrides: {[repo:string]: strin
     }
 
     if (changed) {
-        fs.writeFileSync(path.join(get_repo_path(repo), "dependencies.gradle"), lines.join("\n"));
+        fs.writeFileSync(path.join(get_repo_path(repo_id), "dependencies.gradle"), lines.join("\n"));
     }
 }
 
-async function get_latest_release(repo: string){
-    const resp: string = (await axios.get(`https://nexus.gtnewhorizons.com/repository/public/com/github/GTNewHorizons/${repo}/maven-metadata.xml`, { responseType: "document" })).data;
+async function get_latest_release(dep: string){
+    const resp: string = (await axios.get(`https://nexus.gtnewhorizons.com/repository/public/com/github/GTNewHorizons/${dep}/maven-metadata.xml`, { responseType: "document" })).data;
 
     const doc = await parseStringPromise(resp);
 
