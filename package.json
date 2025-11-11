@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/entry_point.ts",
   "scripts": {
-    "run": "tsx src/entry_point.ts",
+    "tag-dev": "tsx src/entry_point.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {

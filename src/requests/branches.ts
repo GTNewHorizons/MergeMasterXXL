@@ -1,9 +1,10 @@
 import _ from "lodash";
 import { octokit } from "./types";
 import { dryrun, logger } from "../entry_point";
-import { Commit, parse_repo_id, RepoId } from "./repos";
+import { Commit, COMMIT_PR, parse_repo_id, RepoId } from "./repos";
 import yaml from "yaml";
 import { NEWLINE } from "./prs";
+import { dev_branch } from "../env";
 
 export async function get_branch_update_time(repo_id: RepoId, branch: string): Promise<Date | null> {
     try {
@@ -32,7 +33,7 @@ export async function delete_dev(repo_id: RepoId) {
     await octokit.request("DELETE /repos/{owner}/{repo}/branches/{branch}", {
         owner,
         repo,
-        branch: "dev",
+        branch: dev_branch,
     });
 }
 
@@ -51,6 +52,18 @@ export async function get_branch_commits(repo_id: RepoId, branch: string): Promi
             
             const lines = commit.commit.message.split(NEWLINE);
 
+            var subject = lines[0];
+            
+            const match = COMMIT_PR.exec(subject);
+
+            var prid: number | null = null;
+
+            if (match && match.groups) {
+                prid = parseInt(match.groups["pr"]);
+
+                subject = subject.slice(0, subject.length - match.groups["pr"].length);
+            }
+
             return {
                 commit: commit.sha,
                 author_name: commit.commit.author?.name,
@@ -59,7 +72,8 @@ export async function get_branch_commits(repo_id: RepoId, branch: string): Promi
                 committer_name: commit.commit.committer?.name,
                 committer_email: commit.commit.committer?.email,
                 committer_date: (commit.commit.committer as any)?.date,
-                subject: lines[0],
+                prid,
+                subject,
                 message: lines.slice(1).join("\n").trim(),
             } as Commit;
         });

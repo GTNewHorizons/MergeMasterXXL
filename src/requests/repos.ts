@@ -7,9 +7,11 @@ import path from "path";
 import child_process from "child_process";
 import { promisify } from "util";
 import { logger } from "../entry_point";
-import { clone_scratchpad } from "../env";
+import { clone_scratchpad, mergiraf, spotless_blacklist, update_deps_blacklist } from "../env";
 import fs from "fs";
 import { parseStringPromise } from "xml2js";
+import { parse_pr, PRId } from "./prs";
+import { create_tag, get_latest_tag } from "./tags";
 
 const exec0 = promisify(child_process.exec);
 export const exec: typeof exec0 = function(...args: any[]) {
@@ -28,6 +30,10 @@ export type RepoInfo = {
 };
 
 export function parse_repo_id(repo_id: RepoId): RepoInfo {
+    if (repo_id.startsWith("https://github.com/")) {
+        repo_id = repo_id.replace("https://github.com/", "");
+    }
+
     const chunks = _.filter(repo_id.split("/"), Boolean);
 
     if (chunks.length == 1) {
@@ -52,9 +58,11 @@ export function normalize_repo_id(repo_id: RepoId): RepoId {
 }
 
 export async function get_repos(): Promise<RepoId[]> {
+    logger.info("Fetching https://raw.githubusercontent.com/GTNewHorizons/DreamAssemblerXXL/refs/heads/master/releases/manifests/experimental.json");
+
     const data = await axios.get("https://raw.githubusercontent.com/GTNewHorizons/DreamAssemblerXXL/refs/heads/master/releases/manifests/experimental.json");
 
-    const repos = _.keys(data.data.github_mods);
+    const repos = _.map(_.keys(data.data.github_mods), normalize_repo_id);
 
     _.remove(repos, repo => _.includes(repo_blacklist, repo));
 
@@ -67,27 +75,66 @@ export function get_repo_path(repo_id: RepoId) {
     return path.join(clone_scratchpad, owner, repo);
 }
 
-export async function clone_repo(repo_id: RepoId): Promise<void> {
+export async function clone_repo(repo_id: RepoId, checkout: boolean = true): Promise<{default_branch: string}> {
     const { owner, repo } = parse_repo_id(repo_id);
     
     const repo_path = get_repo_path(repo_id);
 
-    await exec(`git clone git@github.com:${owner}/${repo}.git ${repo_path}`, { cwd: clone_scratchpad });
+    if (fs.existsSync(repo_path)) {
+        logger.info(`Not cloning ${repo_id}: path already exists`);
+
+        const default_branch = (await exec(`git symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||'`, { cwd: repo_path })).stdout.trim();
+    
+        return {
+            default_branch
+        };
+    }
+
+    await exec(`git clone ${checkout ? "" : "--no-checkout"} git@github.com:${owner}/${repo}.git ${repo_path}`, { cwd: clone_scratchpad });
 
     await exec(`git config user.name MergeMasterXXL`, { cwd: repo_path });
     await exec(`git config user.email 'N/A'`, { cwd: repo_path });
 
-    logger.info(`Cloned ${owner}/${repo}`);
+    if (mergiraf) {
+        await exec(`git config merge.conflictStyle diff3`, { cwd: repo_path });
+        await exec(`git config merge.mergiraf.name "mergiraf merge driver"`, { cwd: repo_path });
+        await exec(`git config merge.mergiraf.driver "mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L"`, { cwd: repo_path });
+        await exec(`echo "*.java merge=mergiraf" >>.gitattributes`, { cwd: repo_path });
+    }
+
+    const default_branch = (await exec(`git symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||'`, { cwd: repo_path })).stdout.trim();
+
+    logger.info(`Cloned ${owner}/${repo} (default branch: ${default_branch})`);
+
+    try {
+        await get_latest_tag(repo_id);
+    } catch (e) {
+        logger.info(`Could not find tag for master branch: creating one`);
+        await create_tag(repo_id, "0.0.0");
+    }
+
+    return {
+        default_branch
+    };
 }
 
-export async function unclone_repo(repo_id: RepoId): Promise<void> {
+export async function unclone_repo(repo_id: RepoId) {
     const { owner, repo } = parse_repo_id(repo_id);
     const repo_path = get_repo_path(repo_id);
     
-    await exec(`rm -rf ${repo_path}`, { cwd: clone_scratchpad });
-    await exec(`rmdir --ignore-fail-on-non-empty ${owner}`, { cwd: clone_scratchpad });
+    var did_something = false;
 
-    logger.info(`Uncloned ${owner}/${repo}`);
+    if (fs.existsSync(repo_path)) {
+        await exec(`rm -rf ${repo_path}`, { cwd: clone_scratchpad });
+        did_something = true;
+    }
+
+    if (fs.existsSync(path.join(clone_scratchpad, owner))) {
+        await exec(`rmdir --ignore-fail-on-non-empty ${owner}`, { cwd: clone_scratchpad });
+        did_something = true;
+    }
+
+    if (did_something) logger.info(`Uncloned ${owner}/${repo}`);
 }
 
 export async function delete_branch(repo_id: RepoId, branch: string) {
@@ -113,11 +160,24 @@ export async function checkout_new_branch(repo_id: RepoId, branch: string) {
 }
 
 export async function checkout_pr(repo_id: RepoId, permalink: string) {
-    await exec(`gh pr checkout '${permalink}'`, { cwd: get_repo_path(repo_id) });
+    const { pr } = parse_pr(permalink) as PRId;
+
+    await exec(`gh pr checkout '${permalink}' -b ${pr}`, { cwd: get_repo_path(repo_id) });
 }
 
-export async function merge_branch(repo_id: RepoId, source_branch: string) {
-    await exec(`git merge --no-edit --commit '${source_branch}'`, { cwd: get_repo_path(repo_id) });
+export async function merge_branch(repo_id: RepoId, source_branch: string, message: string | null = null) {
+    if (message) {
+        message = ` --no-ff -m "${message}" `;
+    } else {
+        message = "";
+    }
+
+    await exec(`git merge --no-edit --commit ${message} '${source_branch}'`, { cwd: get_repo_path(repo_id) });
+}
+
+
+export async function abort_merge(repo_id: RepoId) {
+    await exec(`git merge --abort`, { cwd: get_repo_path(repo_id) });
 }
 
 export type Commit = {
@@ -128,6 +188,7 @@ export type Commit = {
     committer_name: string;
     committer_email: string;
     committer_date: Date;
+    prid?: number;
     subject: string;
     message: string;
 };
@@ -140,8 +201,10 @@ const COMMIT_FORMAT = {
     committer_name: "%cN",
     committer_email: "%cE",
     committer_date: "%ci",
-    subject: "%f",
+    subject: "%s",
 };
+
+export const COMMIT_PR = /\(\#(?<pr>\d+)\)$/;
 
 export async function get_commits(repo_id: RepoId, ref: string): Promise<Commit[]> {
     try {
@@ -162,6 +225,14 @@ export async function get_commits(repo_id: RepoId, ref: string): Promise<Commit[
             commit.author_date = new Date(commit.author_date);
             commit.committer_date = new Date(commit.committer_date);
             commit.message = (await exec(`git log --pretty=format:"%b" ${commit.commit}`, { cwd: get_repo_path(repo_id) })).stdout.trim();
+
+            const match = COMMIT_PR.exec(commit.subject);
+
+            if (match && match.groups) {
+                commit.prid = parseInt(match.groups["pr"]);
+
+                commit.subject = commit.subject.slice(0, commit.subject.length - match.groups["pr"].length);
+            }
         }
 
         return commits;
@@ -196,21 +267,43 @@ export async function push(repo_id: RepoId, branch: string) {
 }
 
 export async function spotless_apply(repo_id: RepoId) {
+    if (_.includes(spotless_blacklist, repo_id)) {
+        logger.info(`Spotless for ${repo_id} is blacklisted: skipping it`);
+        return;
+    }
+
     if (fs.existsSync(path.join(get_repo_path(repo_id), "gradlew"))) {
         logger.info(`Applying spotless for ${repo_id}`);
 
-        await exec(`./gradlew spotlessApply`, { cwd: get_repo_path(repo_id) });
+        try {
+            await exec(`./gradlew --stop`, { cwd: get_repo_path(repo_id) });
+            await exec(`./gradlew spotlessApply`, { cwd: get_repo_path(repo_id) });
 
-        await commit(repo_id, "sa");
+            await commit(repo_id, "sa");
+        } catch (e) {
+            logger.info(`Could not run spotlessApply: ${e}`);
+
+            await exec(`git reset --hard`, { cwd: get_repo_path(repo_id) });
+        }
     }
 }
 
 export async function update_repo(repo_id: RepoId, tag_overrides: {[repo:string]: string}) {
+    if (_.includes(update_deps_blacklist, repo_id)) {
+        logger.info(`Updating dependencies for ${repo_id} is blacklisted: skipping it`);
+        return;
+    }
+
     if (fs.existsSync(path.join(get_repo_path(repo_id), "gradlew"))) {
         logger.info(`Updating dependencies and buildscript (as needed) for ${repo_id}`);
 
         await update_to_pres(repo_id, tag_overrides);
-        await exec(`./gradlew updateBuildscript`, { cwd: get_repo_path(repo_id) });
+
+        try {
+            await exec(`./gradlew updateBuildscript`, { cwd: get_repo_path(repo_id) });
+        } catch (e) {
+            logger.warn(`Could not run gradlew updateBuildscript: ${e}`);
+        }
 
         const commits = await get_commits(repo_id, "HEAD -n 1");
 
@@ -223,7 +316,11 @@ export async function update_repo(repo_id: RepoId, tag_overrides: {[repo:string]
 const GTNH_DEP = /com\.github\.GTNewHorizons:(?<repo>[^:]+):(?<version>[^:'"]+)(?<stream>:[^:'"]+)?/;
 
 async function update_to_pres(repo_id: RepoId, tag_overrides: {[repo:string]: string}) {
-    const lines = fs.readFileSync(path.join(get_repo_path(repo_id), "dependencies.gradle")).toString().split("\n");
+    const deps = path.join(get_repo_path(repo_id), "dependencies.gradle");
+
+    if (!fs.existsSync(deps)) return;
+
+    const lines = fs.readFileSync(deps).toString().split("\n");
 
     var changed = false;
 
@@ -247,7 +344,7 @@ async function update_to_pres(repo_id: RepoId, tag_overrides: {[repo:string]: st
     }
 
     if (changed) {
-        fs.writeFileSync(path.join(get_repo_path(repo_id), "dependencies.gradle"), lines.join("\n"));
+        fs.writeFileSync(deps, lines.join("\n"));
     }
 }
 

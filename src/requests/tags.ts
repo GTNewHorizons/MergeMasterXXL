@@ -91,9 +91,9 @@ export async function get_latest_tag(repo_id: RepoId, branch: string = "HEAD"): 
 
 export async function get_latest_tags(repo_id: RepoId): Promise<ParsedTag[]> {
     try {
-        const result = await exec(`git tag -l | tail -n 5`, { cwd: get_repo_path(repo_id) });
+        const result = await exec(`git tag -l --sort=creatordate | tail -n 5`, { cwd: get_repo_path(repo_id) });
     
-        const lines = result.stdout.split(NEWLINE);
+        const lines = result.stdout.trim().split(NEWLINE);
 
         return _.map(lines, parse_tag);
     } catch (e) {
@@ -103,9 +103,11 @@ export async function get_latest_tags(repo_id: RepoId): Promise<ParsedTag[]> {
 }
 
 export async function create_tag(repo_id: RepoId, tag_name: string, base: string = "HEAD") {
-    const { owner, repo } = parse_repo_id(repo_id);
-
     await exec(`git tag -f ${tag_name} ${base}`, { cwd: get_repo_path(repo_id) });
+}
+
+export async function push_tag(repo_id: RepoId, tag_name: string, base: string = "HEAD") {
+    const { owner, repo } = parse_repo_id(repo_id);
 
     await exec(`git push origin tag ${tag_name}`, { cwd: get_repo_path(repo_id) });
 
@@ -133,7 +135,7 @@ export async function create_tag(repo_id: RepoId, tag_name: string, base: string
             })).data;
 
             if (resp.total_count == 0) {
-                logger.warn(`Could not find action run for ${sha}: waiting 10 seconds`);
+                logger.info(`Could not find action run for ${sha}: waiting 10 seconds`);
                 
                 await wait(10000);
 

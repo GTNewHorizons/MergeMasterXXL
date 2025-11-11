@@ -1,51 +1,54 @@
 import _ from "lodash";
-import { get_members } from "./requests/teams";
-import { checkout_branch, checkout_new_branch, checkout_pr, clone_repo, commit, delete_branch, force_push, get_commits, get_repos, merge_branch, normalize_repo_id, push, spotless_apply, stringify_repo_id, unclone_repo, update_repo } from "./requests/repos";
+import { abort_merge, checkout_branch, checkout_new_branch, checkout_pr, clone_repo, commit, delete_branch, force_push, get_commits, merge_branch, RepoId, spotless_apply, stringify_repo_id, unclone_repo, update_repo } from "./requests/repos";
 import { Logger, pino } from "pino";
-import { delete_dev, DevBranchStatus, get_branch_commits, get_branch_update_time, get_dev_branch_status } from "./requests/branches";
-import { get_pr, get_prs, NOT_REVERTABLE, parse_pr, PRId, stringify_pr } from "./requests/prs";
+import { delete_dev, DevBranchStatus, get_dev_branch_status } from "./requests/branches";
+import { get_pr, get_prs as get_mergeable_prs, NOT_REVERTABLE, parse_pr, PRId, stringify_pr, PRInfo, get_merged_prs, PullRequest } from "./requests/prs";
 import yaml from "yaml";
-import { prod } from "./env";
+import { dev_branch, dev_custom, dev_error, prod } from "./env";
 import { DepGraph } from "dependency-graph";
-import { create_tag, get_latest_tag, get_latest_tags, get_tag_for_ref, increment_tag, ParsedTag, stringify_tag, wait_for_action } from "./requests/tags";
+import { push_tag, get_latest_tag, get_latest_tags, get_tag_for_ref, increment_tag, ParsedTag, stringify_tag, wait_for_action, create_tag } from "./requests/tags";
 
 export const logger: Logger = prod ? pino({ level: "warn" }) : pino({ transport: { target: "pino-pretty", options: { colorize: true, }, }, level: "debug", });
 
 export const dryrun: boolean = true;
 
-// const members = await get_members();
-
-const repo_ids = ["GTNewHorizons/MergeMasterXXL-TestRepo", "GTNewHorizons/MergeMasterXXL-TestRepo-2"]; // await get_repos();
+const repo_ids = ["GTNewHorizons/GTNHLib"]; // await get_repos_with_prs();
 
 const includedPRs: {[repo:string]: PRId[]} = {};
-const dependencies: {[repo:string]: PRId[]} = {};
+const masterDependencies: {[repo:string]: PRId[]} = {};
+const devDependencies: {[repo:string]: PRId[]} = {};
 
-for (const rid of repo_ids) {
-    const repo_id = normalize_repo_id(rid);
+async function needs_update(repo_id: RepoId, prs: PRInfo) {
+    const dev_update = _.get(await get_commits(repo_id, `${dev_branch} -n 1`), [0, "committer_date"], null);
+    const dev_custom_update = _.get(await get_commits(repo_id, `${dev_custom} -n 1`), [0, "committer_date"], null);
 
-    logger.info(`Checking for changes in https://github.com/${repo_id}`);
-
-    const prs = await get_prs(repo_id);
-
-    logger.info(`${repo_id} has ${prs.prs.length} PR(s) ready for testing`);
-
-    const dev_update = await get_branch_update_time(repo_id, "dev");
-    const dev_custom = await get_branch_update_time(repo_id, "dev-custom");
-
-    if (!dev_update && prs.prs.length == 0 && !dev_custom) {
-        logger.info("No experimental changes are available for this repository and this repository doesn't have a dev branch: skipping it");
-        continue;
+    if (!dev_update && prs.prs.length == 0 && !dev_custom_update) {
+        logger.info(`No experimental changes are available for this repository and this repository doesn't have a ${dev_custom} branch: skipping it`);
+        return false;
     }
 
     if (dev_update) {
-        if (prs.prs.length == 0 && !dev_custom) {
-            logger.info("No experimental changes are available for this repository: deleting the dev branch");
-            await delete_dev(repo_id);
-            logger.info("Deleted dev branch");
-            continue;
+        if (prs.prs.length == 0 && !dev_custom_update) {
+            logger.info(`No experimental changes are available for this repository: deleting the ${dev_branch} branch`);
+            if (!dryrun) await delete_dev(repo_id);
+            logger.info(`Deleted ${dev_branch} branch`);
+            return false;
         }
 
+        const commits = await get_commits(repo_id, `${dev_branch} -n 5`);
+
+        const status = get_dev_branch_status(commits);
+
         var needs_update = false;
+
+        if (status) {
+            includedPRs[repo_id] = _.map(status["Included PRs"], pr => parse_pr(pr) as PRId);
+            devDependencies[repo_id] = _(status["Dependencies"]).map(parse_pr).filter(Boolean).value() as PRId[];
+
+            if (!_.isEqual(status["Included PRs"], prs.prs)) {
+                needs_update = true;
+            }
+        }
 
         for (const pr of prs.prs) {
             const lastUpdate = new Date(pr.updatedAt);
@@ -55,106 +58,136 @@ for (const rid of repo_ids) {
             }
         }
 
-        if (dev_custom && dev_update < dev_custom) {
-            logger.info(`Detected changes in the dev-custom branch (last updated at ${dev_custom})`);
+        if (dev_custom_update && dev_update < dev_custom_update) {
+            logger.info(`Detected changes in the ${dev_custom} branch (last updated at ${dev_custom_update})`);
         }
 
         if (!needs_update) {
-            logger.info("No PRs have been updated: dev will not be updated");
+            logger.info(`No PRs have been updated: ${dev_branch} will not be updated`);
 
-            const commits = await get_branch_commits(repo_id, "dev");
-
-            const status = get_dev_branch_status(commits);
-
-            if (status) {
-                includedPRs[repo_id] = _.map(status["Included PRs"], pr => parse_pr(pr) as PRId);
-                dependencies[repo_id] = _(status["Dependencies"]).map(parse_pr).filter(Boolean).value() as PRId[];
-            }
-            
-            continue;
+            return false;
         }
     }
 
-    try {
-        await clone_repo(repo_id);
+    return true;
+}
+
+async function check_merged_prs(repo_id: RepoId, default_branch: string) {
+    await checkout_branch(repo_id, default_branch);
+
+    const latest_master = await get_latest_tag(repo_id);
+    const commits_since_master_tag = await get_commits(repo_id, `${stringify_tag(latest_master)}..HEAD`);
+
+    if (commits_since_master_tag.length === 0) return;
+    console.log("commits_since_master_tag: ", yaml.stringify(commits_since_master_tag));
     
+    const merge_commits = new Set(_(commits_since_master_tag)
+        .map("prid")
+        .filter(Boolean)
+        .map(x => x as number)
+        .value());
+
+    const merged_prs = await get_merged_prs(repo_id, default_branch, merge_commits, _.toInteger(commits_since_master_tag.length * 1.5));
+    console.log("merged_prs: ", yaml.stringify(merged_prs));
+}
+
+for (const repo_id of repo_ids) {
+    await unclone_repo(repo_id);
+
+    logger.info(`Checking for changes in https://github.com/${repo_id}`);
+
+    try {
+        const { default_branch } = await clone_repo(repo_id);
+    
+        const prs = await get_mergeable_prs(repo_id, default_branch);
+
+        logger.info(`${repo_id} has ${prs.prs.length} PR(s) ready for testing`);
+
+        if (!await needs_update(repo_id, prs)) {
+            continue;
+        }
+
+        await check_merged_prs(repo_id, default_branch);
+
         const previously_included_prs: string[] = [];
     
-        if (await checkout_branch(repo_id, "dev")) {
-            const status = get_dev_branch_status(await get_commits(repo_id, "dev -n 5"));
+        if (await checkout_branch(repo_id, dev_branch)) {
+            const status = get_dev_branch_status(await get_commits(repo_id, `${dev_branch} -n 5`));
 
             if (status) {
                 status["Included PRs"].forEach(x => previously_included_prs.push(x));
             }
         }
     
-        await checkout_branch(repo_id, "master");
+        await checkout_branch(repo_id, default_branch);
     
-        await delete_branch(repo_id, "dev");
-        await checkout_new_branch(repo_id, "dev");
+        await delete_branch(repo_id, dev_branch);
+        await checkout_new_branch(repo_id, dev_branch);
     
         logger.info(`Merging ${prs.prs.length} PRs`);
     
+        const merged: PullRequest[] = [];
+
         for (const pr of prs.prs) {
             logger.info(`Checking out ${pr.permalink}`);
         
             await checkout_pr(repo_id, pr.permalink);
     
-            await checkout_branch(repo_id, "dev");
+            await checkout_branch(repo_id, dev_branch);
     
             try {
                 logger.info(`Merging ${pr.permalink}`);
             
-                await merge_branch(repo_id, "-");
+                await merge_branch(repo_id, "-", `Merge '${pr.title}' into ${dev_branch}`);
+                merged.push(pr);
             } catch (e) {
-                logger.error(`Could not merge ${pr.permalink} into dev: ${e}`);
+                logger.error(`Could not merge ${pr.permalink} into ${dev_branch}: ${e}`);
+                await abort_merge(repo_id);
     
-                if (_.find(pr.labels.nodes, { name: NOT_REVERTABLE })) {
-                    if (_.includes(previously_included_prs, pr.permalink)) {
-                        logger.error(`Experimental tagging will be cancelled since non-revertable PR ${pr.permalink} could not be merged into dev: the dev branch prior to this merge will be pushed to dev-error`);
-                        await force_push(repo_id, "dev-error");
-                        throw new Error("Could not merge non-revertable PR into dev");
-                    }
+                if (_.includes(pr.labels, NOT_REVERTABLE) && _.includes(previously_included_prs, pr.permalink)) {
+                    logger.error(`Experimental tagging will be cancelled since non-revertable PR ${pr.permalink} could not be merged into ${dev_branch}: the ${dev_branch} branch prior to this merge will be pushed to ${dev_error}`);
+                    if (!dryrun) await force_push(repo_id, `${dev_error}`);
+                    throw new Error(`Could not merge non-revertable PR into ${dev_branch}`);
                 }
             }
         }
     
-        logger.info(`Checking out dev-custom`);
+        logger.info(`Checking out ${dev_custom}`);
         
-        if (await checkout_branch(repo_id, "dev-custom")) {
-            await checkout_branch(repo_id, "dev");
+        if (await checkout_branch(repo_id, dev_custom)) {
+            await checkout_branch(repo_id, dev_branch);
     
             try {
-                logger.info(`Merging dev-custom`);
+                logger.info(`Merging ${dev_custom}`);
             
                 await merge_branch(repo_id, "-");
             } catch (e) {
-                logger.error(`Could not merge dev-custom into dev: ${e}`);
+                logger.error(`Could not merge ${dev_custom} into ${dev_branch}: ${e}`);
 
-                logger.error(`Experimental tagging will be cancelled since dev-custom could not be merged into dev: the dev branch prior to this merge will be pushed to dev-error`);
-                await force_push(repo_id, "dev-error");
-                throw new Error("Could not merge dev-custom into dev");
+                logger.error(`Experimental tagging will be cancelled since ${dev_custom} could not be merged into ${dev_branch}: the ${dev_branch} branch prior to this merge will be pushed to ${dev_error}`);
+                if (!dryrun) await force_push(repo_id, `${dev_error}`);
+                throw new Error(`Could not merge ${dev_custom} into ${dev_branch}`);
             }
         } else {
-            logger.info(`dev-custom does not exist: it will not be merged into dev`);
+            logger.info(`${dev_custom} does not exist: it will not be merged into ${dev_branch}`);
         }
 
         await spotless_apply(repo_id);
 
         const state: DevBranchStatus = {
-            "Included PRs": _.map(prs.prs, "permalink"),
-            "Removed PRs": _.difference(previously_included_prs, _.map(prs.prs, "permalink")),
+            "Included PRs": _.map(merged, "permalink"),
+            "Removed PRs": _.difference(previously_included_prs, _.map(merged, "permalink")),
             "Dependencies": _.map(prs.dependencies, stringify_pr),
         };
 
         await commit(repo_id, "Dev Branch Status", yaml.stringify(state));
 
-        await force_push(repo_id, "dev");
+        if (!dryrun) await force_push(repo_id, dev_branch);
 
         includedPRs[repo_id] = _.map(prs.prs, pr => parse_pr(pr.permalink) as PRId);
-        dependencies[repo_id] = prs.dependencies;
+        devDependencies[repo_id] = prs.dependencies;
     } finally {
-        await unclone_repo(repo_id);
+        if (!dryrun) await unclone_repo(repo_id);
     }
 }
 
@@ -168,7 +201,7 @@ for (const repo of repo_ids) {
 
 var success = true;
 
-for (const [repo, dep_prs] of _.entries(dependencies)) {
+for (const [repo, dep_prs] of _.entries(devDependencies)) {
     for (const dep_pr of dep_prs) {
         const repo_id = stringify_repo_id(dep_pr.repo_id);
 
@@ -207,46 +240,43 @@ const workflows: {[repo: string]: string} = {};
 const master_tags: {[repo: string]: string} = {};
 const pre_tags: {[repo: string]: string} = {};
 
+function compare_tag_versions(a: ParsedTag, b: ParsedTag): number {
+    for (const [l, r] of _.zip(a.values, b.values)) {
+        if (l === undefined || r === undefined) {
+            if (l === undefined && r == undefined) {
+                return 0;
+            }
+
+            return l === undefined ? -1 : 1;
+        }
+
+        if (l == r) continue;
+
+        return l < r ? -1 : 1;
+    }
+
+    return 0;
+}
+
 for (const repo_id of graph.overallOrder()) {
     try {
         logger.info(`Creating releases for ${repo_id}`);
 
         await clone_repo(repo_id);
 
-        const latestTag = _.maxBy(await get_latest_tags(repo_id), "values") as ParsedTag;
+        const latestTags = await get_latest_tags(repo_id);
+        latestTags.sort(compare_tag_versions);
 
-        const latestMaster = await get_latest_tag(repo_id, "master");
-        const commitsToMaster = await get_commits(repo_id, `${stringify_tag(latestMaster)}..master`);
+        const latestTag = _.last(latestTags) as ParsedTag;
 
-        if (commitsToMaster.length > 0) {
-            const tag_name = increment_tag(latestTag, false);
-            master_tags[repo_id] = tag_name;
-            pre_tags[repo_id] = tag_name;
-
-            logger.info(`Creating tag ${tag_name} off of master branch (repo: ${repo_id})`);
-
-            await update_repo(repo_id, master_tags);
-            await push(repo_id, "master");
-
-            const workflow_sha = await create_tag(repo_id, tag_name, "master");
-            
-            logger.info(`Created and pushed ${tag_name} (base branch: master,repo: ${repo_id}, workflow commit: ${workflow_sha})`);
-
-            if (workflow_sha) {
-                workflows[repo_id] = workflow_sha;
-            }
-        } else {
-            logger.info(`No commits have been made to master since ${stringify_tag(latestMaster)}: another tag will not be created`);
-        }
-
-        if (await checkout_branch(repo_id, "dev")) {
-            if (await get_tag_for_ref(repo_id, "dev")) {
-                logger.info(`dev branch for ${repo_id} already has a tag: it will not be tagged again because it has not been updated`)
+        if (await checkout_branch(repo_id, dev_branch)) {
+            if (await get_tag_for_ref(repo_id, dev_branch)) {
+                logger.info(`${dev_branch} branch for ${repo_id} already has a tag: it will not be tagged again because it has not been updated`)
             } else {
                 const tag_name = increment_tag(latestTag, true);
                 pre_tags[repo_id] = tag_name;
     
-                logger.info(`Creating tag ${tag_name} off of dev branch (repo: ${repo_id})`);
+                logger.info(`Creating tag ${tag_name} off of ${dev_branch} branch (repo: ${repo_id})`);
     
                 for (const dep_repo_id of graph.dependenciesOf(repo_id)) {
                     logger.info(`Checking dependency ${dep_repo_id} (repo: ${repo_id})`);
@@ -263,22 +293,28 @@ for (const repo_id of graph.overallOrder()) {
                     }
                 }
     
-                logger.info(`Actions for all dependencies have finished: tagging dev branch (repo: ${repo_id})`);
+                logger.info(`Actions for all dependencies have finished: tagging ${dev_branch} branch (repo: ${repo_id})`);
     
                 await update_repo(repo_id, pre_tags);
-                await force_push(repo_id, "dev");
+                if (!dryrun) await force_push(repo_id, dev_branch);
     
-                const workflow_sha = await create_tag(repo_id, tag_name, "dev");
-    
-                logger.info(`Created and pushed ${tag_name} (base branch: dev, repo: ${repo_id}, workflow commit: ${workflow_sha})`);
-    
-                // Overwrite the master workflow if one exists
-                if (workflow_sha) {
-                    workflows[repo_id] = workflow_sha;
+                await create_tag(repo_id, tag_name, dev_branch);
+
+                if (!dryrun) {
+                    const workflow_sha = await push_tag(repo_id, tag_name, dev_branch);
+        
+                    logger.info(`Created and pushed ${tag_name} (base branch: ${dev_branch}, repo: ${repo_id}, workflow commit: ${workflow_sha})`);
+        
+                    // Overwrite the default branch's workflow if one exists
+                    if (workflow_sha) {
+                        workflows[repo_id] = workflow_sha;
+                    }
+                } else {
+                    logger.info(`Created ${tag_name} (base branch: ${dev_branch}, repo: ${repo_id})`);
                 }
             }
         }
     } finally {
-        await unclone_repo(repo_id);
+        if (!dryrun) await unclone_repo(repo_id);
     }
 }
