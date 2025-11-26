@@ -1,6 +1,6 @@
 import _ from "lodash";
 import { octokit } from "./types";
-import { dryrun, logger } from "../entry_point";
+import { logger } from "../env";
 import { Commit, COMMIT_PR, parse_repo_id, RepoId } from "./repos";
 import yaml from "yaml";
 import { NEWLINE } from "./prs";
@@ -26,8 +26,6 @@ export async function get_branch_update_time(repo_id: RepoId, branch: string): P
 }
 
 export async function delete_dev(repo_id: RepoId) {
-    if (dryrun) return;
-
     const { owner, repo } = parse_repo_id(repo_id);
 
     await octokit.request("DELETE /repos/{owner}/{repo}/branches/{branch}", {

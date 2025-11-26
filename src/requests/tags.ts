@@ -1,7 +1,7 @@
 import _ from "lodash";
 import { exec, get_repo_path, parse_repo_id, RepoId } from "./repos";
 import { octokit } from "./types";
-import { logger } from "../entry_point";
+import { logger } from "../env";
 import path from "path";
 import fs from "fs";
 import { wait } from "../mmxxl_utils";
@@ -93,7 +93,7 @@ export async function get_latest_tags(repo_id: RepoId): Promise<ParsedTag[]> {
     try {
         const result = await exec(`git tag -l --sort=creatordate | tail -n 5`, { cwd: get_repo_path(repo_id) });
     
-        const lines = result.stdout.trim().split(NEWLINE);
+        const lines = _.filter(result.stdout.trim().split(NEWLINE), Boolean);
 
         return _.map(lines, parse_tag);
     } catch (e) {
@@ -106,7 +106,9 @@ export async function create_tag(repo_id: RepoId, tag_name: string, base: string
     await exec(`git tag -f ${tag_name} ${base}`, { cwd: get_repo_path(repo_id) });
 }
 
-export async function push_tag(repo_id: RepoId, tag_name: string, base: string = "HEAD") {
+export type WorkflowId = number;
+
+export async function push_tag(repo_id: RepoId, tag_name: string, base: string = "HEAD"): Promise<WorkflowId | null> {
     const { owner, repo } = parse_repo_id(repo_id);
 
     await exec(`git push origin tag ${tag_name}`, { cwd: get_repo_path(repo_id) });
@@ -134,16 +136,18 @@ export async function push_tag(repo_id: RepoId, tag_name: string, base: string =
                 per_page: 1
             })).data;
 
-            if (resp.total_count == 0) {
+            const workflow_run = _.find(resp.workflow_runs, { head_branch: tag_name });
+
+            if (!workflow_run) {
                 logger.info(`Could not find action run for ${sha}: waiting 10 seconds`);
                 
                 await wait(10000);
 
                 continue;
             } else {
-                logger.info(`Found active action for ${sha}: https://github.com/${owner}/${repo}/actions/runs/${resp.workflow_runs[0].id}`);
+                logger.info(`Found active action for ${sha}: https://github.com/${owner}/${repo}/actions/runs/${workflow_run.id}`);
 
-                return sha;
+                return workflow_run.id;
             }
         }
     } else {
@@ -151,25 +155,18 @@ export async function push_tag(repo_id: RepoId, tag_name: string, base: string =
     }
 }
 
-export type Action = {
-    state: "unknown" | "in-progress" | "failed" | "completed";
-    id: number;
-};
+export type WorkflowStatus = "unknown" | "in-progress" | "failed" | "completed";
 
-export async function get_action_state(repo_id: RepoId, ref: string): Promise<Action | null> {
+export async function get_action_state(repo_id: RepoId, workflow_id: WorkflowId): Promise<WorkflowStatus | null> {
     const { owner, repo } = parse_repo_id(repo_id);
 
-    const resp = (await octokit.request("GET /repos/{owner}/{repo}/actions/runs", {
+    const workflow = (await octokit.request("GET /repos/{owner}/{repo}/actions/runs/{run_id}", {
         owner,
         repo,
-        event: "push",
-        head_sha: ref,
-        per_page: 1
+        run_id: workflow_id
     })).data;
 
-    if (resp.workflow_runs.length == 0) return null;
-
-    const status = resp.workflow_runs[0].status;
+    if (!workflow) return null;
 
     const lookup = {
         "completed" : "completed",
@@ -188,24 +185,21 @@ export async function get_action_state(repo_id: RepoId, ref: string): Promise<Ac
         "pending" : "in-progess",
     };
 
-    return {
-        state: status && lookup[status] || "unknown",
-        id: resp.workflow_runs[0].id
-    };
+    return workflow.status && lookup[workflow.status] || "unknown";
 }
 
-export async function wait_for_action(repo_id: RepoId, ref: string) {
+export async function wait_for_action(repo_id: RepoId, ref: string, workflow_id: WorkflowId) {
     const { owner, repo } = parse_repo_id(repo_id);
 
-    const action = await get_action_state(repo_id, ref);
+    const action = await get_action_state(repo_id, workflow_id);
 
-    if (action?.state == "completed") {
-        logger.info(`Action https://github.com/${owner}/${repo}/actions/runs/${action.id} was already finished`);
+    if (action == "completed") {
+        logger.info(`Action https://github.com/${owner}/${repo}/actions/runs/${workflow_id} was already finished`);
         return true;
     }
 
     if (action) {
-        logger.info(`Waiting for action https://github.com/${owner}/${repo}/actions/runs/${action.id} to finish`);
+        logger.info(`Waiting for action https://github.com/${owner}/${repo}/actions/runs/${workflow_id} to finish`);
     } else {
         logger.info(`Waiting for action for ${owner}/${repo}:${ref} to start`);
     }
@@ -214,20 +208,23 @@ export async function wait_for_action(repo_id: RepoId, ref: string) {
     await wait(1000 * 60 * 2);
 
     for (var i = 0; i < 6; i++) {
-        const action = await get_action_state(repo_id, ref);
+        const workflow_status = await get_action_state(repo_id, workflow_id);
     
-        if (action && action?.state != "unknown" && action?.state != "in-progress") {
-            if (action.state == "completed") {
-                return true;
-            } else {
-                logger.info(`Action https://github.com/${owner}/${repo}/actions/runs/${action.id} failed`);
-                return false;
-            }
+        if (workflow_status == "failed") {
+            logger.info(`Action https://github.com/${owner}/${repo}/actions/runs/${workflow_id} has failed`);
+            return false;
+        }
+
+        if (workflow_status == "completed") {
+            logger.info(`Action https://github.com/${owner}/${repo}/actions/runs/${workflow_id} has completed`);
+            return false;
         }
     
         logger.info("Sleeping for 1 minute");
         await wait(1000 * 60);
     }
+
+    logger.info(`Action https://github.com/${owner}/${repo}/actions/runs/${workflow_id} has timed out`);
 
     return false;
 }

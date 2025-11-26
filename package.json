@@ -5,7 +5,8 @@
   "type": "module",
   "main": "src/entry_point.ts",
   "scripts": {
-    "tag-dev": "tsx src/entry_point.ts",
+    "tag-dev": "tsx src/tag_dev.ts",
+    "update-dev": "tsx src/update_dev.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -23,6 +24,7 @@
     "@types/lodash": "^4.17.20",
     "@types/sprintf-js": "^1.1.4",
     "@types/yaml": "^1.9.7",
+    "argparse": "^2.0.1",
     "axios": "^1.12.2",
     "dependency-graph": "^1.0.0",
     "dotenv": "^17.2.2",

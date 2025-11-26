@@ -1,9 +1,8 @@
 import _ from "lodash";
-import { GQList, NamedObject, octokit } from "./types";
-import { logger } from "../entry_point";
+import { GQList, octokit } from "./types";
+import { logger } from "../env";
 import { DepGraph } from "dependency-graph";
-import { get_repos, normalize_repo_id, parse_repo_id, RepoId, RepoInfo } from "./repos";
-import { get_third_party_prs } from "../third_party";
+import { get_repo_config, get_repos, parse_repo_id, RepoId, RepoInfo } from "./repos";
 import { mmxxl_blacklist } from "../env";
 
 /** ISO-8601 encoded date */
@@ -60,30 +59,6 @@ type RespPRs = {
         }
     }
 };
-
-const repos_with_prs = `
-query($org: URI!, $cursor: String) {
-    resource(url: $org) {
-        ... on Organization {
-            repositories(first: 100, after: $cursor) {
-                nodes {
-                    url
-                    pullRequests(states: [OPEN], first: 0) {
-                        pageInfo {
-                            hasNextPage
-                            endCursor
-                        }
-                    }
-                }
-                pageInfo {
-                    hasNextPage
-                    endCursor
-                }
-            }
-        }
-    }
-}
-`;
 
 const get_repo_prs = `
 query($org: URI!, $repo: String!, $cursor: String) {
@@ -218,50 +193,6 @@ function load_pr(repo_info: RepoInfo, ql: QLPR): PullRequest | null {
     return out;
 }
 
-type R2 = {
-    resource: {
-        repositories: GQList<{
-            url: string;
-            pullRequests: {
-                pageInfo: {
-                    hasNextPage: boolean;
-                };
-            };
-        }>;
-    };
-};
-
-export async function get_repos_with_prs(owner: string = "GTNewHorizons"): Promise<RepoId[]> {
-    logger.info("Fetching repos with PRs");
-
-    const out: RepoId[] = [];
-
-    const resp: R2 = await octokit.graphql(repos_with_prs, { org: `https://github.com/${owner}`, cursor: null });
-
-    for (const repo of resp.resource.repositories.nodes) {
-        if (repo.pullRequests.pageInfo.hasNextPage) {
-            out.push(normalize_repo_id(repo.url));
-        }
-    }
-
-    var pageInfo = resp.resource.repositories.pageInfo;
-
-    while (pageInfo.hasNextPage) {
-        const resp2: R2 = await octokit.graphql(repos_with_prs, { org: `https://github.com/${owner}`, cursor: pageInfo.endCursor });
-        pageInfo = resp2.resource.repositories.pageInfo;
-
-        for (const repo of resp2.resource.repositories.nodes) {
-            if (repo.pullRequests.pageInfo.hasNextPage) {
-                out.push(normalize_repo_id(repo.url));
-            }
-        }
-    }
-
-    const mods = await get_repos();
-
-    return _.difference(_.intersection(out, mods), mmxxl_blacklist);
-}
-
 export async function get_prs(repo_id: RepoId, default_branch: string): Promise<PRInfo> {
     const repo_info = parse_repo_id(repo_id);
     const { owner, repo } = repo_info;
@@ -281,14 +212,18 @@ export async function get_prs(repo_id: RepoId, default_branch: string): Promise<
         }
     }
 
+    const config = await get_repo_config(repo_id);
+
     const third_party: PullRequest[] = [];
 
-    for (const pr_id of get_third_party_prs(repo_id)) {
-        logger.info(`Fetching info for third party PR: ${stringify_pr(pr_id)}`);
-
-        const pr = await get_pr(pr_id);
-
-        if (pr) third_party.push(pr);
+    if (config) {
+        for (const pr_id of config.thirdPartyPRs) {
+            logger.info(`Fetching info for third party PR: ${stringify_pr(pr_id)}`);
+    
+            const pr = await get_pr(pr_id);
+    
+            if (pr) third_party.push(pr);
+        }
     }
 
     const validPRs = _(allPRs)

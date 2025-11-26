@@ -1,27 +1,22 @@
 import _ from "lodash";
-import { octokit } from "./types";
 
-import { request } from "@octokit/request";
 import axios from "axios";
 import path from "path";
 import child_process from "child_process";
 import { promisify } from "util";
-import { logger } from "../entry_point";
-import { clone_scratchpad, mergiraf, spotless_blacklist, update_deps_blacklist } from "../env";
+import { logger, mmxxl_blacklist } from "../env";
+import { clone_scratchpad, spotless_blacklist, update_deps_blacklist } from "../env";
 import fs from "fs";
 import { parseStringPromise } from "xml2js";
 import { parse_pr, PRId } from "./prs";
 import { create_tag, get_latest_tag } from "./tags";
+import yaml from "yaml";
 
 const exec0 = promisify(child_process.exec);
 export const exec: typeof exec0 = function(...args: any[]) {
-    logger.info(`Executing: ${arguments[0]}`);
+    logger.debug(`Executing: ${arguments[0]}`);
     return (exec0 as any)(...args);
 };
-
-const repo_blacklist = [
-    
-];
 
 export type RepoId = string;
 export type RepoInfo = {
@@ -62,11 +57,7 @@ export async function get_repos(): Promise<RepoId[]> {
 
     const data = await axios.get("https://raw.githubusercontent.com/GTNewHorizons/DreamAssemblerXXL/refs/heads/master/releases/manifests/experimental.json");
 
-    const repos = _.map(_.keys(data.data.github_mods), normalize_repo_id);
-
-    _.remove(repos, repo => _.includes(repo_blacklist, repo));
-
-    return repos;
+    return _.map(_.keys(data.data.github_mods), normalize_repo_id);
 }
 
 export function get_repo_path(repo_id: RepoId) {
@@ -94,13 +85,6 @@ export async function clone_repo(repo_id: RepoId, checkout: boolean = true): Pro
 
     await exec(`git config user.name MergeMasterXXL`, { cwd: repo_path });
     await exec(`git config user.email 'N/A'`, { cwd: repo_path });
-
-    if (mergiraf) {
-        await exec(`git config merge.conflictStyle diff3`, { cwd: repo_path });
-        await exec(`git config merge.mergiraf.name "mergiraf merge driver"`, { cwd: repo_path });
-        await exec(`git config merge.mergiraf.driver "mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L"`, { cwd: repo_path });
-        await exec(`echo "*.java merge=mergiraf" >>.gitattributes`, { cwd: repo_path });
-    }
 
     const default_branch = (await exec(`git symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||'`, { cwd: repo_path })).stdout.trim();
 
@@ -242,6 +226,12 @@ export async function get_commits(repo_id: RepoId, ref: string): Promise<Commit[
     }
 }
 
+export async function is_dirty(repo_id: RepoId) {
+    const output = await exec(`git status --porcelain`, { cwd: get_repo_path(repo_id) });
+
+    return output.stdout.trim().length > 0;
+}
+
 export async function commit(repo_id: RepoId, subject: string, message?: string, amend: boolean = false) {
     var lines = [
         subject || ""
@@ -289,15 +279,10 @@ export async function spotless_apply(repo_id: RepoId) {
 }
 
 export async function update_repo(repo_id: RepoId, tag_overrides: {[repo:string]: string}) {
-    if (_.includes(update_deps_blacklist, repo_id)) {
-        logger.info(`Updating dependencies for ${repo_id} is blacklisted: skipping it`);
-        return;
-    }
-
     if (fs.existsSync(path.join(get_repo_path(repo_id), "gradlew"))) {
         logger.info(`Updating dependencies and buildscript (as needed) for ${repo_id}`);
 
-        await update_to_pres(repo_id, tag_overrides);
+        await update_dependencies(repo_id, tag_overrides);
 
         try {
             await exec(`./gradlew updateBuildscript`, { cwd: get_repo_path(repo_id) });
@@ -305,17 +290,20 @@ export async function update_repo(repo_id: RepoId, tag_overrides: {[repo:string]
             logger.warn(`Could not run gradlew updateBuildscript: ${e}`);
         }
 
-        const commits = await get_commits(repo_id, "HEAD -n 1");
-
-        const ammend = commits[0] && commits[0].subject == "update";
-
-        await commit(repo_id, "update", undefined, ammend);
+        if (await is_dirty(repo_id)) {
+            await commit(repo_id, "update", undefined);
+        }
     }
 }
 
 const GTNH_DEP = /com\.github\.GTNewHorizons:(?<repo>[^:]+):(?<version>[^:'"]+)(?<stream>:[^:'"]+)?/;
 
-async function update_to_pres(repo_id: RepoId, tag_overrides: {[repo:string]: string}) {
+async function update_dependencies(repo_id: RepoId, tag_overrides: {[repo:string]: string}) {
+    if (_.includes(update_deps_blacklist, repo_id)) {
+        logger.info(`Updating dependencies for ${repo_id} is blacklisted: skipping it`);
+        return;
+    }
+
     const deps = path.join(get_repo_path(repo_id), "dependencies.gradle");
 
     if (!fs.existsSync(deps)) return;
@@ -348,10 +336,79 @@ async function update_to_pres(repo_id: RepoId, tag_overrides: {[repo:string]: st
     }
 }
 
+const release_cache: {[dep:string]: string|null} = {};
+
+type MavenMetadata = {
+    metadata: {
+        groupId: string[];
+        artifactId: [];
+        versioning: Array<{
+            latest: string[];
+            release: string[];
+            versions: Array<{
+                version: string[];
+            }>;
+        }>;
+    }
+};
+
 async function get_latest_release(dep: string){
-    const resp: string = (await axios.get(`https://nexus.gtnewhorizons.com/repository/public/com/github/GTNewHorizons/${dep}/maven-metadata.xml`, { responseType: "document" })).data;
+    try {
+        if (release_cache[dep] !== undefined) return release_cache[dep];
 
-    const doc = await parseStringPromise(resp);
+        const resp: string = (await axios.get(`https://nexus.gtnewhorizons.com/repository/public/com/github/GTNewHorizons/${dep}/maven-metadata.xml`, { responseType: "document" })).data;
+    
+        const doc: MavenMetadata = await parseStringPromise(resp);
+    
+        const latest = _(doc.metadata.versioning)
+            .flatMap(x => x.versions)
+            .flatMap(x => x.version)
+            .reverse()
+            .filter(v => !v.endsWith("-pre"))
+            .value();
 
-    return doc.metadata.versioning[0].latest;
+        release_cache[dep] = latest[0] || null;
+
+        return latest[0] || null;
+    } catch (e) {
+        if (e.status == 404) {
+            release_cache[dep] = null;
+            return null;
+        }
+
+        logger.error(`Could not get latest version for ${dep}: ${e.message}`);
+    }
+}
+
+export type RepoConfig = {
+    blacklisted: boolean;
+    updateDependencies: boolean;
+    applySpotless: boolean;
+    thirdPartyPRs: PRId[];
+};
+
+export async function get_repo_config(repo_id: RepoId): Promise<RepoConfig | null> {
+    try {
+        repo_id = normalize_repo_id(repo_id);
+
+        if (!fs.existsSync(path.join(get_repo_path(repo_id), ".mmxxl-config.yaml"))) {
+            logger.debug(`Repo ${repo_id} does not have a config (file ${path.join(get_repo_path(repo_id), ".mmxxl-config.yaml")} was missing)`);
+            return null;
+        }
+
+        const text = fs.readFileSync(path.join(get_repo_path(repo_id), ".mmxxl-config.yaml")).toString();
+
+        const raw = yaml.parse(text);
+
+        return {
+            blacklisted: typeof(raw.blacklisted) !== "boolean" ? mmxxl_blacklist.includes(repo_id) : Boolean(raw.blacklisted),
+            updateDependencies: typeof(raw.updateDependencies) !== "boolean" ? update_deps_blacklist.includes(repo_id) : Boolean(raw.updateDependencies),
+            applySpotless: typeof(raw.applySpotless) !== "boolean" ? spotless_blacklist.includes(repo_id) : Boolean(raw.applySpotless),
+            thirdPartyPRs: _.filter(_.map(raw.thirdPartyPRs || [], parse_pr), x => x !== null),
+        };
+    } catch (e) {
+        logger.error(`Could not read config for repo ${repo_id}: ${e}`);
+
+        return null;
+    }
 }
