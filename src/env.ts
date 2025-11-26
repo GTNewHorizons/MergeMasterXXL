@@ -55,13 +55,11 @@ parser.add_argument('--update-deps-blacklist', {
     help: 'Adds a repo to the updates blacklist. Dependencies will not be updated on the given repos, even if they have inter-repo dependencies.',
 });
 
-if (argv[1].endsWith("tag_dev.ts")) {
-    parser.add_argument('repos', {
-        type: 'string',
-        nargs: '*',
-        help: 'A list of repos to tag (each in the format `Owner/Repo`: `GTNewHorizons/GT5-Unofficial`)'
-    });
-}
+parser.add_argument('repos', {
+    type: 'string',
+    nargs: '*',
+    help: 'A list of repos to update or tag (each in the format `Owner/Repo`: `GTNewHorizons/GT5-Unofficial`)'
+});
 
 const args = parser.parse_args();
 
