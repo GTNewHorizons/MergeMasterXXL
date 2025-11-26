@@ -1,0 +1,70 @@
+
+name: Update Dev Branch
+
+jobs:
+  update-dev:
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Install Ubuntu Dependencies
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y mesa-utils xvfb x11-xserver-utils nodejs npm
+
+    - name: Checkout MMXXL repo
+      uses: actions/checkout@v5
+      with:
+        repository: GTNewHorizons/MergeMasterXXL
+        path: /opt/mmxxl
+        fetch-depth: 0
+
+    - name: Install MMXXL Node Dependencies
+      run: |
+        cd /opt/mmxxl
+        npm install
+
+    - name: Checkout Mod Repo
+      uses: actions/checkout@v5
+      with:
+        path: /opt/mmxxl/clones/GTNewHorizons/${{ github.repository_id }}
+
+    - name: Determine JDK versions
+      id: list-jdk-versions
+      shell: bash
+      run: |
+        (
+          echo 'java-versions<<EOF'
+          echo 8
+          echo 17
+          echo 21
+          if [[ -f /opt/mmxxl/clones/GTNewHorizons/${{ github.repository_id }}/gradle/gradle-daemon-jvm.properties ]]; then
+            yq -pprops -oprops '.toolchainVersion' /opt/mmxxl/clones/GTNewHorizons/${{ github.repository_id }}/gradle/gradle-daemon-jvm.properties
+          fi
+          echo EOF
+        ) | tee -a "${GITHUB_OUTPUT}"
+
+    - name: Set up JDK versions
+      uses: actions/setup-java@v5
+      with:
+        java-version: ${{ steps.list-jdk-versions.outputs.java-versions }}
+        distribution: 'zulu'
+
+    - name: Install Mergiraf
+      run: |
+        mkdir /opt/mergiraf
+        cd /opt/mergiraf
+        wget https://codeberg.org/mergiraf/mergiraf/releases/download/latest/mergiraf_x86_64-unknown-linux-gnu.tar.gz
+        tar -zxvf ./mergiraf_x86_64-unknown-linux-gnu.tar.gz
+        chmod +x ./mergiraf
+        git config --global merge.mergiraf.name mergiraf
+        git config --global merge.mergiraf.driver '/opt/mergiraf/mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L'
+        echo '* merge=mergiraf' >> ~/.gitattributes
+
+    - name: Update Dev Branch
+      run: |
+        cd /opt/mmxxl
+        npm run update-dev GTNewHorizons/${{ github.repository_id }}
+
+    - name: Tag Master & Dev If Possible
+      run: |
+        cd /opt/mmxxl
+        npm run tag-dev GTNewHorizons/${{ github.repository_id }} || true
