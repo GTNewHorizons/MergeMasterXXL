@@ -17,18 +17,16 @@ jobs:
       uses: actions/checkout@v5
       with:
         repository: GTNewHorizons/MergeMasterXXL
-        path: /opt/mmxxl
-        fetch-depth: 0
+        path: MergeMasterXXL
 
     - name: Install MMXXL Node Dependencies
       run: |
-        cd /opt/mmxxl
         npm install
 
     - name: Checkout Mod Repo
       uses: actions/checkout@v5
       with:
-        path: /opt/mmxxl/clones/GTNewHorizons/${{ github.repository_id }}
+        path: MergeMasterXXL/clones/${{ github.GITHUB_REPOSITORY_OWNER }}/${{ github.repository_id }}
 
     - name: Determine JDK versions
       id: list-jdk-versions
@@ -39,8 +37,8 @@ jobs:
           echo 8
           echo 17
           echo 21
-          if [[ -f /opt/mmxxl/clones/GTNewHorizons/${{ github.repository_id }}/gradle/gradle-daemon-jvm.properties ]]; then
-            yq -pprops -oprops '.toolchainVersion' /opt/mmxxl/clones/GTNewHorizons/${{ github.repository_id }}/gradle/gradle-daemon-jvm.properties
+          if [[ -f MergeMasterXXL/clones/${{ github.GITHUB_REPOSITORY_OWNER }}/${{ github.repository_id }}/gradle/gradle-daemon-jvm.properties ]]; then
+            yq -pprops -oprops '.toolchainVersion' MergeMasterXXL/clones/${{ github.GITHUB_REPOSITORY_OWNER }}/${{ github.repository_id }}/gradle/gradle-daemon-jvm.properties
           fi
           echo EOF
         ) | tee -a "${GITHUB_OUTPUT}"
@@ -52,26 +50,25 @@ jobs:
         distribution: 'zulu'
 
     - name: Install Mergiraf
+      working-directory: ./mergiraf
       run: |
-        mkdir /opt/mergiraf
-        cd /opt/mergiraf
         wget https://codeberg.org/mergiraf/mergiraf/releases/download/latest/mergiraf_x86_64-unknown-linux-gnu.tar.gz
-        tar -zxvf ./mergiraf_x86_64-unknown-linux-gnu.tar.gz
-        chmod +x ./mergiraf
+        tar -zxvf ./mergiraf_x86_64-unknown-linux-gnu.tar.gz -C ${{GITHUB_PATH}}
+        chmod +x ${{GITHUB_PATH}}/mergiraf
         git config --global merge.mergiraf.name mergiraf
-        git config --global merge.mergiraf.driver '/opt/mergiraf/mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L'
+        git config --global merge.mergiraf.driver '${{GITHUB_WORKSPACE}}/mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L'
         echo '* merge=mergiraf' >> ~/.gitattributes
 
     - name: Update Dev Branch
+      working-directory: MergeMasterXXL
       run: |
-        cd /opt/mmxxl
-        npm run update-dev GTNewHorizons/${{ github.repository_id }}
+        npm run update-dev ${{ github.GITHUB_REPOSITORY_OWNER }}/${{ github.repository_id }}
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Tag Master & Dev If Possible
+      working-directory: MergeMasterXXL
       run: |
-        cd /opt/mmxxl
-        npm run tag-dev GTNewHorizons/${{ github.repository_id }} || true
+        npm run tag-dev ${{ github.GITHUB_REPOSITORY_OWNER }}/${{ github.repository_id }} || true
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
