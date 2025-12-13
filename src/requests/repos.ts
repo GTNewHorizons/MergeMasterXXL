@@ -81,7 +81,7 @@ export async function clone_repo(repo_id: RepoId, checkout: boolean = true): Pro
         };
     }
 
-    await exec(`git clone ${checkout ? "" : "--no-checkout"} git@github.com:${owner}/${repo}.git ${repo_path}`, { cwd: clone_scratchpad });
+    await exec(`git clone ${checkout ? "" : "--no-checkout"} https://github.com/${owner}/${repo}.git ${repo_path}`, { cwd: clone_scratchpad });
 
     await exec(`git config user.name MergeMasterXXL`, { cwd: repo_path });
     await exec(`git config user.email 'N/A'`, { cwd: repo_path });
