@@ -51,7 +51,6 @@ jobs:
         distribution: 'zulu'
 
     - name: Install Mergiraf
-      working-directory: Mergiraf
       run: |
         wget https://codeberg.org/mergiraf/mergiraf/releases/download/latest/mergiraf_x86_64-unknown-linux-gnu.tar.gz
         tar -zxvf ./mergiraf_x86_64-unknown-linux-gnu.tar.gz -C ${{ github.GITHUB_PATH }}
