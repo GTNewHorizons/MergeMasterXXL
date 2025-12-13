@@ -1,9 +1,6 @@
 import { ArgumentParser } from 'argparse';
 import dotenv from 'dotenv';
 import pino, { Logger } from 'pino';
-import { argv } from 'process';
-import { get_entry_point } from './entry_point';
-import fs from "fs";
 import path from 'path';
 
 dotenv.config({ quiet: process.env.NODE_ENV === 'production' });

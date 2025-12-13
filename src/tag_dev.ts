@@ -13,8 +13,6 @@ logger.debug(`Scanning repos: ${repo_ids.map(x => `"${x}"`).join(", ")}`);
 
 logger.info(`Scanning ${repo_ids.length} repos`);
 
-throw "";
-
 /// PRs merged into the master branch
 const masterPRs: {[repo:string]: PRId[]} = {};
 /// PRs merged into the dev branch
