@@ -63,7 +63,7 @@ jobs:
       working-directory: MergeMasterXXL
       run: |
         DIR=$(realpath ..)
-        REPO=$(basename $(dirname "$DIR"))/$(basename "$DIR")
+        REPO=${{ github.GITHUB_REPOSITORY_OWNER }}/$(basename "$DIR")
         [[ ! -z "$REPO" ]]
         npm run update-dev $REPO
       env:
@@ -73,7 +73,7 @@ jobs:
       working-directory: MergeMasterXXL
       run: |
         DIR=$(realpath ..)
-        REPO=$(basename $(dirname "$DIR"))/$(basename "$DIR")
+        REPO=${{ github.GITHUB_REPOSITORY_OWNER }}/$(basename "$DIR")
         [[ ! -z "$REPO" ]]
         npm run tag-dev $REPO
       env:
