@@ -27,7 +27,7 @@ jobs:
     - name: Checkout Mod Repo
       uses: actions/checkout@v5
       with:
-        path: MergeMasterXXL/clones/${{ github.GITHUB_REPOSITORY_OWNER }}/${{ github.repository_id }}
+        path: MergeMasterXXL/clones/${{ github.GITHUB_REPOSITORY }}
 
     - name: Determine JDK versions
       id: list-jdk-versions
@@ -38,8 +38,8 @@ jobs:
           echo 8
           echo 17
           echo 21
-          if [[ -f MergeMasterXXL/clones/${{ github.GITHUB_REPOSITORY_OWNER }}/${{ github.repository_id }}/gradle/gradle-daemon-jvm.properties ]]; then
-            yq -pprops -oprops '.toolchainVersion' MergeMasterXXL/clones/${{ github.GITHUB_REPOSITORY_OWNER }}/${{ github.repository_id }}/gradle/gradle-daemon-jvm.properties
+          if [[ -f MergeMasterXXL/clones/${{ github.GITHUB_REPOSITORY }}/gradle/gradle-daemon-jvm.properties ]]; then
+            yq -pprops -oprops '.toolchainVersion' MergeMasterXXL/clones/${{ github.GITHUB_REPOSITORY }}/gradle/gradle-daemon-jvm.properties
           fi
           echo EOF
         ) | tee -a "${GITHUB_OUTPUT}"
@@ -62,13 +62,13 @@ jobs:
     - name: Update Dev Branch
       working-directory: MergeMasterXXL
       run: |
-        npm run update-dev ${{ github.GITHUB_REPOSITORY_OWNER }}/${{ github.repository_id }}
+        npm run update-dev ${{ github.GITHUB_REPOSITORY }}
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Tag Master & Dev If Possible
       working-directory: MergeMasterXXL
       run: |
-        npm run tag-dev ${{ github.GITHUB_REPOSITORY_OWNER }}/${{ github.repository_id }} || true
+        npm run tag-dev ${{ github.GITHUB_REPOSITORY }} || true
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
