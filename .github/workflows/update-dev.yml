@@ -20,6 +20,7 @@ jobs:
         path: MergeMasterXXL
 
     - name: Install MMXXL Node Dependencies
+      working-directory: MergeMasterXXL
       run: |
         npm install
 
