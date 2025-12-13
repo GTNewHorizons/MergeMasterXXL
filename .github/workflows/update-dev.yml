@@ -53,10 +53,10 @@ jobs:
     - name: Install Mergiraf
       run: |
         wget https://codeberg.org/mergiraf/mergiraf/releases/download/latest/mergiraf_x86_64-unknown-linux-gnu.tar.gz
-        tar -zxvf ./mergiraf_x86_64-unknown-linux-gnu.tar.gz -C ${{ github.GITHUB_PATH }}
-        chmod +x ${{ github.GITHUB_PATH }}/mergiraf
+        tar -zxvf ./mergiraf_x86_64-unknown-linux-gnu.tar.gz
+        chmod +x ./mergiraf
         git config --global merge.mergiraf.name mergiraf
-        git config --global merge.mergiraf.driver '${{ github.GITHUB_WORKSPACE }}/mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L'
+        git config --global merge.mergiraf.driver '$(realpath ./mergiraf) merge --git %O %A %B -s %S -x %X -y %Y -p %P -l %L'
         echo '* merge=mergiraf' >> ~/.gitattributes
 
     - name: Update Dev Branch
