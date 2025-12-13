@@ -62,7 +62,8 @@ jobs:
     - name: Update Dev Branch
       working-directory: MergeMasterXXL
       run: |
-        REPO=$(basename $(dirname '${{ github.GITHUB_WORKSPACE }}'))/$(basename '${{ github.GITHUB_WORKSPACE }}')
+        DIR=$(realpath ${{ github.GITHUB_WORKSPACE }})
+        REPO=$(basename $(dirname "$DIR"))/$(basename "$DIR")
         [[ ! -z "$REPO" ]]
         npm run update-dev $REPO
       env:
@@ -71,7 +72,8 @@ jobs:
     - name: Tag Master & Dev If Possible
       working-directory: MergeMasterXXL
       run: |
-        REPO=$(basename $(dirname '${{ github.GITHUB_WORKSPACE }}'))/$(basename '${{ github.GITHUB_WORKSPACE }}')
+        DIR=$(realpath ${{ github.GITHUB_WORKSPACE }})
+        REPO=$(basename $(dirname "$DIR"))/$(basename "$DIR")
         [[ ! -z "$REPO" ]]
         npm run tag-dev $REPO
       env:
