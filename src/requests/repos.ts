@@ -82,12 +82,12 @@ export async function clone_repo(repo_id: RepoId, checkout: boolean = true): Pro
     }
 
     if (is_gh_action) {
-        await exec(`git clone git:${gh_token}@github.com:${owner}/${repo}.git ${repo_path} --  ${checkout ? "" : "--no-checkout"}`, {
+        await exec(`git clone ${checkout ? "" : "--no-checkout"} https://x-access-token:${gh_token}@github.com/${owner}/${repo}.git ${repo_path}`, {
             cwd: clone_scratchpad,
             env: { GH_TOKEN: gh_token }
         });
     } else {
-        await exec(`git clone git@github.com:${owner}/${repo}.git ${repo_path} --  ${checkout ? "" : "--no-checkout"}`, {
+        await exec(`git clone ${checkout ? "" : "--no-checkout"} git@github.com:${owner}/${repo}.git ${repo_path}`, {
             cwd: clone_scratchpad,
             env: { GH_TOKEN: gh_token }
         });
