@@ -63,8 +63,8 @@ jobs:
       working-directory: MergeMasterXXL
       run: |
         DIR=$(realpath ..)
-        REPO=${{ github.GITHUB_REPOSITORY_OWNER }}/$(basename "$DIR")
-        [[ ! -z "$REPO" ]]
+        REPO=GTNewHorizons/$(basename "$DIR")
+        [[ ! -z "$(basename "$DIR")" ]]
         npm run update-dev --gh-action $REPO
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -73,8 +73,8 @@ jobs:
       working-directory: MergeMasterXXL
       run: |
         DIR=$(realpath ..)
-        REPO=${{ github.GITHUB_REPOSITORY_OWNER }}/$(basename "$DIR")
-        [[ ! -z "$REPO" ]]
+        REPO=GTNewHorizons/$(basename "$DIR")
+        [[ ! -z "$(basename "$DIR")" ]]
         npm run tag-dev --gh-action $REPO
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
