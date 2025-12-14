@@ -11,7 +11,7 @@ jobs:
     - name: Install Ubuntu Dependencies
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y mesa-utils xvfb x11-xserver-utils nodejs npm git gh
+        sudo apt-get install -y mesa-utils xvfb x11-xserver-utils nodejs npm
 
     - name: Checkout MMXXL repo
       uses: actions/checkout@v5
@@ -65,7 +65,7 @@ jobs:
         DIR=$(realpath ..)
         REPO=${{ github.GITHUB_REPOSITORY_OWNER }}/$(basename "$DIR")
         [[ ! -z "$REPO" ]]
-        npm run update-dev $REPO
+        npm run update-dev --gh-action $REPO
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -75,6 +75,6 @@ jobs:
         DIR=$(realpath ..)
         REPO=${{ github.GITHUB_REPOSITORY_OWNER }}/$(basename "$DIR")
         [[ ! -z "$REPO" ]]
-        npm run tag-dev $REPO
+        npm run tag-dev --gh-action $REPO
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

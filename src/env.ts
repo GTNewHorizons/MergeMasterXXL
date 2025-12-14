@@ -32,6 +32,11 @@ parser.add_argument('--dryrun', {
     action: "store_true",
     help: 'Performs every operation as normal, but does not push anything.'
 });
+parser.add_argument('--gh-action', {
+    dest: "is_gh_action",
+    action: "store_true",
+    help: 'Changes some behaviour to make MMXXL work in a github action.'
+});
 parser.add_argument('--log-level', {
     dest: "log_level",
     help: 'Sets the log level. One of: trace, debug, info, warn, error, fatal.'
@@ -68,6 +73,7 @@ export const dev_branch = args.dev_branch || "dev-mmxxl";
 export const dev_custom = args.dev_custom || (dev_branch + "-custom");
 export const dev_error = args.dev_error || (dev_branch + "-error");
 export const dryrun = args.dryrun;
+export const is_gh_action = Boolean(args.is_gh_action);
 
 export const repos: string[] = args.repos || [];
 

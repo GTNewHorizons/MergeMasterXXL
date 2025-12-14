@@ -4,7 +4,7 @@ import axios from "axios";
 import path from "path";
 import child_process from "child_process";
 import { promisify } from "util";
-import { gh_token, logger, mmxxl_blacklist } from "../env";
+import { gh_token, is_gh_action, logger, mmxxl_blacklist } from "../env";
 import { clone_scratchpad, spotless_blacklist, update_deps_blacklist } from "../env";
 import fs from "fs";
 import { parseStringPromise } from "xml2js";
@@ -81,10 +81,17 @@ export async function clone_repo(repo_id: RepoId, checkout: boolean = true): Pro
         };
     }
 
-    await exec(`gh repo clone https://github.com/${owner}/${repo}.git ${repo_path} --  ${checkout ? "" : "--no-checkout"}`, {
-        cwd: clone_scratchpad,
-        env: { GH_TOKEN: gh_token }
-    });
+    if (is_gh_action) {
+        await exec(`gh repo clone git:${gh_token}@github.com/${owner}/${repo}.git ${repo_path} --  ${checkout ? "" : "--no-checkout"}`, {
+            cwd: clone_scratchpad,
+            env: { GH_TOKEN: gh_token }
+        });
+    } else {
+        await exec(`gh repo clone git@github.com/${owner}/${repo}.git ${repo_path} --  ${checkout ? "" : "--no-checkout"}`, {
+            cwd: clone_scratchpad,
+            env: { GH_TOKEN: gh_token }
+        });
+    }
 
     await exec(`git config user.name MergeMasterXXL`, { cwd: repo_path });
     await exec(`git config user.email 'N/A'`, { cwd: repo_path });
