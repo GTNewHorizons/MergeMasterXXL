@@ -65,7 +65,7 @@ jobs:
         DIR=$(realpath ..)
         REPO=GTNewHorizons/$(basename "$DIR")
         [[ ! -z "$(basename "$DIR")" ]]
-        npm run update-dev --gh-action $REPO
+        npm run update-dev-gha $REPO
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -75,6 +75,6 @@ jobs:
         DIR=$(realpath ..)
         REPO=GTNewHorizons/$(basename "$DIR")
         [[ ! -z "$(basename "$DIR")" ]]
-        npm run tag-dev --gh-action $REPO
+        npm run tag-dev-gha $REPO
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -7,6 +7,8 @@
   "scripts": {
     "tag-dev": "tsx src/tag_dev.ts",
     "update-dev": "tsx src/update_dev.ts",
+    "tag-dev-gha": "tsx src/tag_dev.ts --gh-action",
+    "update-dev-gha": "tsx src/update_dev.ts --gh-action",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
