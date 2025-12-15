@@ -92,7 +92,7 @@ export function get_dev_branch_status(commits: Commit[]): DevBranchStatus | null
     for (const commit of commits) {
         if (commit && commit.committer_name == "MergeMasterXXL" && commit.subject == "Dev Branch Status") {
             try {
-                return yaml.parse(commit.message);
+                return yaml.parse(Buffer.from(commit.message, 'base64').toString('utf-8'));
             } catch (e) {
                 logger.error(`Could not parse Dev Branch Status commit: ${e}`);
                 return null;

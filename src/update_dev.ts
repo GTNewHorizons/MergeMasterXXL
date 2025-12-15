@@ -5,7 +5,7 @@ import { get_prs as get_mergeable_prs, NOT_REVERTABLE, stringify_pr, PRInfo, Pul
 import yaml from "yaml";
 import { dev_branch, dev_custom, dev_error, dryrun, logger, repos } from "./env";
 
-async function needs_update(repo_id: RepoId, prs: PRInfo) {
+async function needs_update(repo_id: RepoId, prs: PRInfo, default_branch: string) {
     const dev_update = _.get(await get_commits(repo_id, `${dev_branch} -n 1`), [0, "committer_date"], null);
     const dev_custom_update = _.get(await get_commits(repo_id, `${dev_custom} -n 1`), [0, "committer_date"], null);
 
@@ -43,6 +43,14 @@ async function needs_update(repo_id: RepoId, prs: PRInfo) {
                 logger.info(`Detected merged or closed PRs: ${removed.join(", ")}`);
                 needs_update = true;
             }
+        }
+
+        const commits_to_master = await get_commits(repo_id, `${dev_branch}..${default_branch}`);
+
+        logger.info(`There have been ${commits_to_master.length} commits to ${default_branch} since ${dev_branch} was last updated`);
+
+        if (commits_to_master.length > 0) {
+            needs_update = true;
         }
 
         for (const pr of prs.prs) {
@@ -83,7 +91,7 @@ async function merge_prs_into_dev(repo_id: RepoId) {
 
         logger.info(`${repo_id} has ${prs.prs.length} PR(s) ready for testing`);
 
-        if (!await needs_update(repo_id, prs)) {
+        if (!await needs_update(repo_id, prs, default_branch)) {
             return;
         }
 
@@ -158,7 +166,8 @@ async function merge_prs_into_dev(repo_id: RepoId) {
             "Dependencies": _.map(prs.dependencies, stringify_pr),
         };
 
-        await commit(repo_id, "Dev Branch Status", yaml.stringify(state));
+        // Scramble the commit message with base64 to prevent github from spamming PRs with links to these commits
+        await commit(repo_id, "Dev Branch Status", Buffer.from(yaml.stringify(state)).toString('base64'));
 
         if (!dryrun) await force_push(repo_id, dev_branch);
     } finally {
