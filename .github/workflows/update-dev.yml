@@ -67,7 +67,7 @@ jobs:
         [[ ! -z "$(basename "$DIR")" ]]
         npm run update-dev-gha $REPO
       env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.MMXXL_TOKEN }}
 
     - name: Tag Master & Dev If Possible
       working-directory: MergeMasterXXL
@@ -77,4 +77,4 @@ jobs:
         [[ ! -z "$(basename "$DIR")" ]]
         npm run tag-dev-gha $REPO
       env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.MMXXL_TOKEN }}
